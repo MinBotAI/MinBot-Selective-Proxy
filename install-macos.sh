@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_URL="${MINBOT_PROXY_SCRIPT_URL:-https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy-Client/main/install-macos.sh}"
+readonly SCRIPT_URL="${MINBOT_PROXY_SCRIPT_URL:-https://github.com/MinBotAI/MinBot-Selective-Proxy-Client/raw/refs/heads/main/install-macos.sh}"
 readonly KEYCHAIN_SERVICE="ai.minbot.selective-proxy"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/minbot-selective-proxy"
 readonly USERNAME_FILE="${CONFIG_DIR}/username"
