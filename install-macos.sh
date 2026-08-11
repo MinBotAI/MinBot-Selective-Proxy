@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_URL="${MINBOT_PROXY_SCRIPT_URL:-https://github.com/MinBotAI/MinBot-Selective-Proxy-Client/raw/refs/heads/main/install-macos.sh}"
+readonly SCRIPT_REPOSITORY="${MINBOT_PROXY_GIT_URL:-https://github.com/MinBotAI/MinBot-Selective-Proxy-Client.git}"
 readonly KEYCHAIN_SERVICE="ai.minbot.selective-proxy"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/minbot-selective-proxy"
 readonly USERNAME_FILE="${CONFIG_DIR}/username"
@@ -121,37 +121,28 @@ install_sing_box() {
 
 install_cli() {
   require_homebrew
-  local install_dir install_path download_dir download_path download_url separator
+  if ! command -v git >/dev/null 2>&1; then
+    brew install git
+  fi
+  local install_dir install_path download_dir checkout_dir source_path
   install_dir="$(brew --prefix)/bin"
   install_path="${install_dir}/${INSTALL_NAME}"
   download_dir="$(mktemp -d)"
-  download_path="${download_dir}/${INSTALL_NAME}"
-  separator="?"
-  if [[ "${SCRIPT_URL}" == *\?* ]]; then
-    separator="&"
-  fi
-  download_url="${SCRIPT_URL}${separator}cache=$(date +%s)"
-
-  curl \
-    --fail \
-    --silent \
-    --show-error \
-    --location \
-    --proto '=https' \
-    --tlsv1.2 \
-    "${download_url}" \
-    --output "${download_path}"
-  if ! grep -q '^# MinBot Selective Proxy macOS installer and launcher$' "${download_path}"; then
-    echo "Downloaded file is not the expected MinBot installer." >&2
-    rm -f -- "${download_path}"
-    rmdir "${download_dir}"
+  checkout_dir="${download_dir}/repository"
+  git clone --quiet --depth 1 "${SCRIPT_REPOSITORY}" "${checkout_dir}"
+  source_path="${checkout_dir}/install-macos.sh"
+  if ! grep -q '^# MinBot Selective Proxy macOS installer and launcher$' "${source_path}"; then
+    echo "GitHub repository does not contain the expected MinBot installer." >&2
+    find "${download_dir}" -type f -delete
+    find "${download_dir}" -type l -delete
+    find "${download_dir}" -depth -type d -exec rmdir {} +
     exit 1
   fi
-  chmod 755 "${download_path}"
   mkdir -p "${install_dir}"
-  install -m 0755 "${download_path}" "${install_path}"
-  rm -f -- "${download_path}"
-  rmdir "${download_dir}"
+  install -m 0755 "${source_path}" "${install_path}"
+  find "${download_dir}" -type f -delete
+  find "${download_dir}" -type l -delete
+  find "${download_dir}" -depth -type d -exec rmdir {} +
   echo "Installed ${install_path}"
 }
 
