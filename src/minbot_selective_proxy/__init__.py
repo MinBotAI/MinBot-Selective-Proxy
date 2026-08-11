@@ -1,2 +1,1 @@
 """MinBot authenticated selective proxy."""
-
