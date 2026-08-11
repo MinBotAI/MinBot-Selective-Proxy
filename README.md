@@ -10,7 +10,7 @@ apps can use the same domain allowlist.
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  "https://github.com/MinBotAI/MinBot-Selective-Proxy-Client/raw/refs/heads/main/install-macos.sh?$(date +%s)" \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy-Client/1ffd6608afe2b2fbab3b5f1a0f695b9f8e91340d/install-macos.sh \
   | bash
 ```
 
