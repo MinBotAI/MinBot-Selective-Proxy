@@ -151,6 +151,10 @@ install_cli() {
 }
 
 configure_credentials() {
+  if [[ ! -r /dev/tty ]]; then
+    echo "An interactive terminal is required to enter proxy credentials." >&2
+    exit 1
+  fi
   mkdir -p "${CONFIG_DIR}"
   chmod 700 "${CONFIG_DIR}"
 
@@ -160,10 +164,10 @@ configure_credentials() {
     default_username="$(<"${USERNAME_FILE}")"
   fi
   if [[ -n "${default_username}" ]]; then
-    read -r -p "Proxy username [${default_username}]: " username
+    read -r -p "Proxy username [${default_username}]: " username </dev/tty
     username="${username:-${default_username}}"
   else
-    read -r -p "Proxy username: " username
+    read -r -p "Proxy username: " username </dev/tty
   fi
   if [[ -z "${username}" || "${username}" == *$'\n'* ]]; then
     echo "A valid username is required." >&2
@@ -178,7 +182,7 @@ configure_credentials() {
     -a "${username}" \
     -s "${KEYCHAIN_SERVICE}" \
     -l "MinBot Selective Proxy" \
-    -w
+    -w </dev/tty
 }
 
 render_private_config() {
