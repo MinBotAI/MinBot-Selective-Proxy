@@ -121,11 +121,16 @@ install_sing_box() {
 
 install_cli() {
   require_homebrew
-  local install_dir install_path download_dir download_path
+  local install_dir install_path download_dir download_path download_url separator
   install_dir="$(brew --prefix)/bin"
   install_path="${install_dir}/${INSTALL_NAME}"
   download_dir="$(mktemp -d)"
   download_path="${download_dir}/${INSTALL_NAME}"
+  separator="?"
+  if [[ "${SCRIPT_URL}" == *\?* ]]; then
+    separator="&"
+  fi
+  download_url="${SCRIPT_URL}${separator}cache=$(date +%s)"
 
   curl \
     --fail \
@@ -134,7 +139,7 @@ install_cli() {
     --location \
     --proto '=https' \
     --tlsv1.2 \
-    "${SCRIPT_URL}" \
+    "${download_url}" \
     --output "${download_path}"
   if ! grep -q '^# MinBot Selective Proxy macOS installer and launcher$' "${download_path}"; then
     echo "Downloaded file is not the expected MinBot installer." >&2
