@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MinBot Proxy</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="brand"><img src="icon-128.png" alt="" /></div>
+        <div>
+          <h1>MinBot Proxy</h1>
+          <p>海外站点分流与域名管理</p>
+        </div>
+        <label class="switch" aria-label="启用代理">
+          <input id="enabled" type="checkbox" />
+          <span></span>
+        </label>
+      </header>
+
+      <section class="panel setup">
+        <div class="section-heading">
+          <h2>连接设置</h2>
+          <span id="connectionStatus" class="status">未配置</span>
+        </div>
+        <label>
+          代理地址
+          <input id="authority" autocomplete="url" placeholder="主机:端口" />
+        </label>
+        <div class="credentials">
+          <label>
+            用户名
+            <input id="username" autocomplete="username" />
+          </label>
+          <label>
+            密码
+            <input id="password" type="password" autocomplete="current-password" />
+          </label>
+        </div>
+        <button id="save" class="primary" type="button">保存并连接</button>
+        <p class="helper">凭据仅保存在当前 Chrome 配置中，不会写入 PAC。</p>
+      </section>
+
+      <section class="panel domains">
+        <div class="section-heading">
+          <div>
+            <h2>Allowlist</h2>
+            <p><span id="domainCount">0</span> 个根域名</p>
+          </div>
+          <button id="refresh" class="icon-button" type="button" aria-label="刷新">↻</button>
+        </div>
+        <form id="domainForm">
+          <input id="domain" placeholder="例如 example.com" autocomplete="off" />
+          <button class="add-button" type="submit">添加</button>
+        </form>
+        <div id="message" role="status"></div>
+        <ul id="domainList"></ul>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

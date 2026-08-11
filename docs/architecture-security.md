@@ -1,0 +1,63 @@
+# 架构与安全边界
+
+## 请求路径
+
+1. PAC、Chrome、Karing 或 sing-box 判断目标域名是否在 allowlist。
+2. 命中的 TCP 请求通过带 Basic Proxy Authentication 的 HTTP 正向代理发送。
+3. 服务端再次校验账号、目标域名、端口和 DNS 解析结果。
+4. 非 allowlist 域名、非 80/443 端口，以及私网、回环、链路本地、保留或非全局
+   IP 均被拒绝。
+
+客户端规则只决定分流体验，不能扩大服务端权限。即使客户端规则被修改，服务端仍
+只允许当前 allowlist。
+
+## 公开与受保护入口
+
+无需认证：
+
+- `/healthz`
+- `/proxy.pac`、`/wpad.dat`
+- `/domains.list`
+- `/domains.sing-box.json`
+
+需要代理认证：
+
+- HTTP 请求和 HTTPS `CONNECT`
+
+需要账号认证：
+
+- `GET /api/domains`
+- `POST /api/domains`
+- `DELETE /api/domains/{domain}`
+
+允许公开读取规则，是为了让系统 PAC 和开源客户端自动更新；写入始终需要认证。
+
+## 凭据
+
+- 主账号放在部署平台 Secret：`PROXY_USERNAME`、`PROXY_PASSWORD`。
+- 其他账号放在 Secret：`PROXY_ADDITIONAL_USERS_JSON`。
+- 仓库、PAC、规则文件和安装脚本均不包含真实凭据。
+- macOS 客户端把密码放入 Keychain；运行时配置权限为 `600`，退出后删除。
+- Chrome 凭据只保存在当前 Profile 的 `chrome.storage.local`。
+
+HTTP 代理端口本身不终止 TLS。HTTPS 网页内容位于客户端与目标站点之间的
+`CONNECT` TLS 隧道内，但代理认证头在建立隧道前发送，不能视为传输加密。应使用
+独立高熵密码，不得复用邮箱、服务器或业务系统密码；在不可信网络中应先建立设备级
+加密隧道。
+
+## 数据与日志
+
+服务不访问 SnapCrab 数据库，也不记录目标 URL、查询参数、认证信息或浏览明细。
+运行日志只保留必要的启动与错误信息。allowlist 状态默认写入容器临时目录；需要跨
+部署保留时必须挂载专用持久卷。
+
+## 容量保护
+
+以下环境变量限制连接资源：
+
+- `PROXY_MAX_CONNECTIONS`，默认 `64`
+- `PROXY_CONNECT_TIMEOUT_SECONDS`，默认 `10`
+- `PROXY_IDLE_TIMEOUT_SECONDS`，默认 `120`
+- `PROXY_TUNNEL_MAX_SECONDS`，默认 `1800`
+
+本服务面向少量受信用户，不应作为公开匿名代理。

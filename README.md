@@ -1,45 +1,79 @@
-# MinBot Selective Proxy Client
+# MinBot Selective Proxy
 
-Free and open-source macOS installer for the authenticated MinBot selective
-proxy. It installs sing-box, saves the proxy password in macOS Keychain, and
-creates a TUN configuration at runtime so Codex, terminal tools, and desktop
-apps can use the same domain allowlist.
+MinBot 的独立选择性代理服务。它只转发 allowlist 中的域名，其他流量保持
+直连；代理连接和 allowlist 管理均需账号认证。
 
-## Install
+本仓库包含：
+
+- Python 代理服务与 Docker 镜像
+- Chrome 扩展及图形化 allowlist 管理
+- macOS 全 App 的 sing-box 一键安装脚本
+- iPhone / iPad 的 Karing 配置模板
+- 测试、部署、安全与运维文档
+
+代理代码不依赖 SnapCrabBE，也不会访问 SnapCrab 的数据库、Redis 或业务 API。
+
+## 快速使用
+
+### macOS 全 App
+
+以下命令通过 HTTPS 下载固定版本的安装脚本，安装开源 sing-box，并将密码保存到
+macOS Keychain：
 
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy-Client/1ffd6608afe2b2fbab3b5f1a0f695b9f8e91340d/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.0.0/install-macos.sh \
   | bash
 ```
 
-The installer prompts for an assigned proxy username and then uses the secure
-macOS Keychain prompt for the password. It does not send credentials to GitHub
-or save the password in the repository or a permanent configuration file.
-
-Start the all-app proxy with:
+安装完成后运行：
 
 ```bash
 minbot-proxy run
 ```
 
-Other commands:
+### Chrome
+
+在 `chrome://extensions` 开启开发者模式，加载
+[`clients/chrome`](clients/chrome) 目录。扩展可配置账号、启停代理，并查看或修改
+当前 allowlist。
+
+### iPhone / iPad
+
+使用开源 Karing 导入 [`clients/karing/karing.template.yaml`](clients/karing/karing.template.yaml)
+的个人副本。不要把已填写密码的配置上传或提交到仓库。
+
+完整步骤见 [客户端配置](docs/client-setup.md)。
+
+## 本地开发
 
 ```bash
-minbot-proxy configure
-minbot-proxy check
-minbot-proxy update
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[test]'
+pytest -q
 ```
 
-The remote proxy remains authenticated and enforces its server-side domain
-allowlist. This client cannot add destinations or bypass that boundary.
+本地运行前，至少设置 `PROXY_USERNAME` 和 `PROXY_PASSWORD`：
 
-## Requirements
+```bash
+set -a
+. ./.env.local
+set +a
+python -m minbot_selective_proxy.server
+```
 
-- macOS
-- Homebrew
-- An assigned MinBot selective-proxy account
+不要把 `.env.local`、真实账号或密码提交到 Git。
+
+## 文档
+
+- [架构与安全边界](docs/architecture-security.md)
+- [客户端配置](docs/client-setup.md)
+- [Allowlist 管理](docs/allowlist-operations.md)
+- [Zeabur 部署](docs/deployment-zeabur.md)
+- [版本发布与安装分发](docs/release-distribution.md)
+- [故障排查](docs/troubleshooting.md)
 
 ## License
 
