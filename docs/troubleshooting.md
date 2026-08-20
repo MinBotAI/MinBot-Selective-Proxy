@@ -39,9 +39,10 @@
 v1.1.0。该版本使用 TLS 加密客户端到代理的 CONNECT 请求，并拒绝 allowlist 的 QUIC
 流量以触发 TCP 回退；旧版明文入口会暴露 CONNECT 目标，可能被链路中间设备重置。
 
-若出现 `only IP queries are supported by fakeip`，升级到 v1.1.1。该版本只把 A/AAAA
-查询交给 FakeIP，并对 allowlist 的 HTTPS/SVCB 查询返回空的成功响应，避免浏览器在
-DNS 阶段失败或使用 HTTPS 记录中的真实 IP 绕过域名代理。
+若出现 `only IP queries are supported by fakeip`，或 HTTPS 查询本地 DNS 超时，升级
+到 v1.1.2。该版本只把 A/AAAA 查询交给 FakeIP，并统一对 HTTPS/SVCB 查询返回空的
+成功响应，避免浏览器在 DNS 阶段失败、等待超时或使用 HTTPS 记录中的真实 IP 绕过
+域名代理。
 
 ## 修改在重建后消失
 

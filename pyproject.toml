@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "minbot-selective-proxy"
-version = "1.1.1"
+version = "1.1.2"
 description = "Authenticated, domain-scoped HTTP forward proxy"
 readme = "README.md"
 requires-python = ">=3.12"

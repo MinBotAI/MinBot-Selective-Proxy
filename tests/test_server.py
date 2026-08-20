@@ -54,7 +54,6 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
     assert dns["rules"] == [
         {
             "query_type": ["HTTPS", "SVCB"],
-            "rule_set": "minbot-domains",
             "action": "predefined",
             "rcode": "NOERROR",
         },

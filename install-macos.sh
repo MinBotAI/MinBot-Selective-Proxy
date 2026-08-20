@@ -74,7 +74,6 @@ emit_sing_box_config() {
     "rules": [
       {
         "query_type": ["HTTPS", "SVCB"],
-        "rule_set": "minbot-domains",
         "action": "predefined",
         "rcode": "NOERROR"
       },
