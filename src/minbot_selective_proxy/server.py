@@ -13,6 +13,7 @@ import contextlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
@@ -100,6 +101,7 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "upgrade",
     }
 )
+_LOGGER = logging.getLogger("minbot_selective_proxy")
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +111,7 @@ class ProxyConfig:
     domains: tuple[str, ...]
     domains_state_path: str = ""
     additional_users: tuple[tuple[str, str], ...] = ()
-    max_connections: int = 64
+    max_connections: int = 256
     connect_timeout_seconds: float = 10.0
     idle_timeout_seconds: float = 120.0
     tunnel_max_seconds: float = 1_800.0
@@ -133,7 +135,7 @@ def load_config() -> ProxyConfig:
         domains=domains,
         domains_state_path=os.getenv("PROXY_DOMAINS_STATE_PATH", "").strip(),
         additional_users=additional_users,
-        max_connections=max(1, int(os.getenv("PROXY_MAX_CONNECTIONS", "64"))),
+        max_connections=max(1, int(os.getenv("PROXY_MAX_CONNECTIONS", "256"))),
         connect_timeout_seconds=max(
             1.0, float(os.getenv("PROXY_CONNECT_TIMEOUT_SECONDS", "10"))
         ),
@@ -321,44 +323,71 @@ class SelectiveProxyServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
-            header_block = await asyncio.wait_for(
-                reader.readuntil(b"\r\n\r\n"),
-                timeout=self.config.connect_timeout_seconds,
-            )
-            if len(header_block) > _HEADER_LIMIT:
-                await _send_error(writer, 431, "Request Header Fields Too Large")
-                return
-            request_line, headers = _parse_headers(header_block)
-            method, target, version = _parse_request_line(request_line)
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError, ValueError):
-            await _send_error(writer, 400, "Bad Request")
-            return
-
-        try:
-            if target.startswith("/"):
-                await self._serve_direct(
-                    method,
-                    target,
-                    headers,
-                    reader,
-                    writer,
+            try:
+                header_block = await asyncio.wait_for(
+                    reader.readuntil(b"\r\n\r\n"),
+                    timeout=self.config.connect_timeout_seconds,
                 )
-                return
-            if not _authorized(headers, self.config):
-                await _send_proxy_auth_required(writer)
-                return
-            async with self._slots:
-                if method == "CONNECT":
-                    await self._handle_connect(target, writer, reader)
+                if len(header_block) > _HEADER_LIMIT:
+                    await _send_error(writer, 431, "Request Header Fields Too Large")
                     return
-                await self._handle_http(method, target, version, headers, writer, reader)
-        except PermissionError as exc:
-            await _send_error(writer, 403, "Forbidden", str(exc))
+                request_line, headers = _parse_headers(header_block)
+                method, target, version = _parse_request_line(request_line)
+            except (
+                asyncio.IncompleteReadError,
+                asyncio.LimitOverrunError,
+                TimeoutError,
+                ValueError,
+            ):
+                await _send_error(writer, 400, "Bad Request")
+                return
+
+            try:
+                if target.startswith("/"):
+                    await self._serve_direct(
+                        method,
+                        target,
+                        headers,
+                        reader,
+                        writer,
+                    )
+                    return
+                if not _authorized(headers, self.config):
+                    await _send_proxy_auth_required(writer)
+                    return
+                if self._slots.locked():
+                    await _send_response(
+                        writer,
+                        503,
+                        "Service Unavailable",
+                        b"Proxy connection capacity is exhausted\n",
+                        "text/plain",
+                        extra_headers={"Retry-After": "1"},
+                    )
+                    return
+                await self._slots.acquire()
+                try:
+                    if method == "CONNECT":
+                        await self._handle_connect(target, writer, reader)
+                        return
+                    await self._handle_http(
+                        method, target, version, headers, writer, reader
+                    )
+                finally:
+                    self._slots.release()
+            except PermissionError as exc:
+                await _send_error(writer, 403, "Forbidden", str(exc))
+            except (ConnectionError, OSError, TimeoutError) as exc:
+                _LOGGER.warning("proxy connection failed: %s", exc)
+                await _send_error(writer, 502, "Bad Gateway")
         except (ConnectionError, OSError, TimeoutError):
-            await _send_error(writer, 502, "Bad Gateway")
+            # Clients can disconnect while the proxy is resolving, connecting,
+            # replying, or closing. These are normal transport events and must
+            # not escape asyncio's client callback as unhandled tracebacks.
+            pass
         finally:
             writer.close()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(ConnectionError, OSError, asyncio.CancelledError):
                 await writer.wait_closed()
 
     async def _serve_direct(
@@ -721,20 +750,38 @@ async def _open_public_connection(
     if not domain_is_allowed(host, domains if domains is not None else config.domains):
         raise PermissionError("destination is outside the proxy allowlist")
     addresses = await _resolve_public_addresses(host, port)
-    last_error: OSError | None = None
-    for family, _socktype, protocol, _canonname, sockaddr in addresses:
-        try:
-            return await asyncio.wait_for(
-                asyncio.open_connection(
-                    host=str(sockaddr[0]),
-                    port=port,
-                    family=family,
-                    proto=protocol,
-                ),
-                timeout=config.connect_timeout_seconds,
-            )
-        except OSError as exc:
-            last_error = exc
+    async def connect(
+        row: tuple[int, int, int, str, tuple[object, ...]],
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        family, _socktype, protocol, _canonname, sockaddr = row
+        return await asyncio.open_connection(
+            host=str(sockaddr[0]),
+            port=port,
+            family=family,
+            proto=protocol,
+        )
+
+    tasks = [asyncio.create_task(connect(row)) for row in addresses[:8]]
+    last_error: BaseException | None = None
+    try:
+        async with asyncio.timeout(config.connect_timeout_seconds):
+            for completed in asyncio.as_completed(tasks):
+                try:
+                    connection = await completed
+                except OSError as exc:
+                    last_error = exc
+                    continue
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                return connection
+    except TimeoutError as exc:
+        last_error = exc
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     raise ConnectionError("upstream connection failed") from last_error
 
 
@@ -853,6 +900,10 @@ async def _send_response(
 
 
 async def main() -> None:
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     config = load_config()
     port = int(os.getenv("PORT", "8080"))
     server = SelectiveProxyServer(config)

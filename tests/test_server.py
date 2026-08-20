@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import socket
 import subprocess
 from pathlib import Path
 
 import pytest
+import minbot_selective_proxy.server as server_module
 
 from minbot_selective_proxy.server import (
     DEFAULT_PROXY_DOMAINS,
@@ -16,6 +18,7 @@ from minbot_selective_proxy.server import (
     _admin_authorized,
     _authorized,
     _load_additional_users,
+    _open_public_connection,
     _resolve_public_addresses,
     build_pac,
     domain_is_allowed,
@@ -65,6 +68,37 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
         {"network": "udp", "action": "route", "outbound": "direct"}
     )
     assert dns_hijack_index < udp_direct_index
+
+
+def test_macos_installer_uses_current_script_without_git_clone(tmp_path) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    script = tmp_path / "install-macos.sh"
+    script.write_bytes((repository / "install-macos.sh").read_bytes())
+    script.chmod(0o755)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    brew_prefix = tmp_path / "homebrew"
+    fake_brew = fake_bin / "brew"
+    fake_brew.write_text(
+        f'#!/bin/bash\nif [[ "$1" == "--prefix" ]]; then echo "{brew_prefix}"; exit 0; fi\nexit 99\n'
+    )
+    fake_brew.chmod(0o755)
+    fake_git = fake_bin / "git"
+    fake_git.write_text("#!/bin/bash\nexit 99\n")
+    fake_git.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(script), "_install-cli-current"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    installed = brew_prefix / "bin" / "minbot-proxy"
+    assert installed.read_bytes() == script.read_bytes()
+    assert "from the current script" in result.stdout
 
 
 def test_domain_allowlist_covers_subdomains_but_rejects_lookalikes_and_ips() -> None:
@@ -199,6 +233,40 @@ async def test_authenticated_proxy_still_rejects_nonallowlisted_destination() ->
 
 
 @pytest.mark.asyncio
+async def test_saturated_proxy_returns_service_unavailable_without_queueing() -> None:
+    config = ProxyConfig(
+        username="proxy",
+        password="secret",
+        domains=("example.com",),
+        max_connections=1,
+    )
+    proxy = SelectiveProxyServer(config)
+    await proxy._slots.acquire()
+    listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
+    port = listener.sockets[0].getsockname()[1]
+    encoded = base64.b64encode(b"proxy:secret").decode()
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(
+        (
+            "CONNECT example.com:443 HTTP/1.1\r\n"
+            "Host: example.com:443\r\n"
+            f"Proxy-Authorization: Basic {encoded}\r\n\r\n"
+        ).encode()
+    )
+    await writer.drain()
+
+    response = await asyncio.wait_for(reader.read(), timeout=0.5)
+    writer.close()
+    await writer.wait_closed()
+    listener.close()
+    await listener.wait_closed()
+    proxy._slots.release()
+
+    assert response.startswith(b"HTTP/1.1 503 Service Unavailable")
+    assert b"Retry-After: 1" in response
+
+
+@pytest.mark.asyncio
 async def test_allowlist_api_requires_auth_and_updates_pac(tmp_path) -> None:
     config = ProxyConfig(
         username="proxy",
@@ -324,3 +392,52 @@ async def test_dns_validation_rejects_private_only_resolution(monkeypatch) -> No
 
     with pytest.raises(PermissionError, match="public address"):
         await _resolve_public_addresses("example.com", 443)
+
+
+@pytest.mark.asyncio
+async def test_public_connection_does_not_wait_for_unreachable_first_address(
+    monkeypatch,
+) -> None:
+    async def fake_resolve(_host, port):
+        return [
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("2606:4700::1111", port, 0, 0),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", port),
+            ),
+        ]
+
+    expected = (object(), object())
+
+    async def fake_open_connection(*, host, **_kwargs):
+        if host == "2606:4700::1111":
+            await asyncio.Event().wait()
+        return expected
+
+    monkeypatch.setattr(server_module, "_resolve_public_addresses", fake_resolve)
+    monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+
+    connection = await asyncio.wait_for(
+        _open_public_connection(
+            "example.com",
+            443,
+            ProxyConfig(
+                username="proxy",
+                password="secret",
+                domains=("example.com",),
+                connect_timeout_seconds=1,
+            ),
+        ),
+        timeout=0.2,
+    )
+
+    assert connection is expected

@@ -147,16 +147,41 @@ install_sing_box() {
 }
 
 install_cli() {
+  local mode="${1:-install}"
   require_homebrew
   if ! command -v git >/dev/null 2>&1; then
     brew install git
   fi
-  local install_dir install_path download_dir checkout_dir source_path
+  local install_dir install_path current_source download_dir checkout_dir source_path
   install_dir="$(brew --prefix)/bin"
   install_path="${install_dir}/${INSTALL_NAME}"
+  current_source="${BASH_SOURCE[0]}"
+
+  if [[ "${mode}" == "install" && -f "${current_source}" ]] &&
+    grep -q '^# MinBot Selective Proxy macOS installer and launcher$' "${current_source}"; then
+    mkdir -p "${install_dir}"
+    if [[ -e "${install_path}" && "${current_source}" -ef "${install_path}" ]]; then
+      echo "MinBot CLI is already installed: ${install_path}"
+    else
+      install -m 0755 "${current_source}" "${install_path}"
+      echo "Installed ${install_path} from the current script"
+    fi
+    return
+  fi
+
+  echo "Downloading the latest MinBot CLI from GitHub..."
   download_dir="$(mktemp -d)"
   checkout_dir="${download_dir}/repository"
-  git clone --quiet --depth 1 "${SCRIPT_REPOSITORY}" "${checkout_dir}"
+  if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git \
+    -c credential.interactive=never \
+    clone --progress --depth 1 "${SCRIPT_REPOSITORY}" "${checkout_dir}"; then
+    find "${download_dir}" -type f -delete
+    find "${download_dir}" -type l -delete
+    find "${download_dir}" -depth -type d -exec rmdir {} +
+    echo "Unable to download the private repository without GitHub access." >&2
+    echo "Authenticate Git first, or run a local copy of install-macos.sh." >&2
+    exit 1
+  fi
   source_path="${checkout_dir}/install-macos.sh"
   if ! grep -q '^# MinBot Selective Proxy macOS installer and launcher$' "${source_path}"; then
     echo "GitHub repository does not contain the expected MinBot installer." >&2
@@ -250,9 +275,17 @@ run_proxy() {
 
 install_all() {
   require_macos
+  echo "[1/4] Checking sing-box..."
   install_sing_box
-  install_cli
-  configure_credentials
+  echo "[2/4] Installing MinBot CLI..."
+  install_cli install
+  echo "[3/4] Checking proxy credentials..."
+  if [[ -s "${USERNAME_FILE}" ]]; then
+    echo "Existing proxy username found; keeping the current Keychain credentials."
+  else
+    configure_credentials
+  fi
+  echo "[4/4] Validating the generated configuration..."
   check_config
   echo
   echo "Setup complete. Start the proxy with: ${INSTALL_NAME} run"
@@ -274,7 +307,10 @@ case "${1:-install}" in
     ;;
   update)
     require_macos
-    install_cli
+    install_cli update
+    ;;
+  _install-cli-current)
+    install_cli install
     ;;
   _print-template)
     emit_sing_box_config

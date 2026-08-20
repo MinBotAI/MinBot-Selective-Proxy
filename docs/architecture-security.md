@@ -55,7 +55,8 @@ HTTP 代理端口本身不终止 TLS。HTTPS 网页内容位于客户端与目�
 
 以下环境变量限制连接资源：
 
-- `PROXY_MAX_CONNECTIONS`，默认 `64`
+- `PROXY_MAX_CONNECTIONS`，默认 `256`；整机 TUN 客户端会并发建立大量浏览器和 App
+  隧道，生产环境不应低于 `128`
 - `PROXY_CONNECT_TIMEOUT_SECONDS`，默认 `10`
 - `PROXY_IDLE_TIMEOUT_SECONDS`，默认 `120`
 - `PROXY_TUNNEL_MAX_SECONDS`，默认 `1800`
