@@ -73,12 +73,20 @@ emit_sing_box_config() {
     ],
     "rules": [
       {
+        "query_type": ["HTTPS", "SVCB"],
+        "rule_set": "minbot-domains",
+        "action": "predefined",
+        "rcode": "NOERROR"
+      },
+      {
+        "query_type": ["A", "AAAA"],
         "rule_set": "minbot-domains",
         "action": "route",
         "server": "minbot-fakeip"
       }
     ],
-    "final": "local"
+    "final": "local",
+    "independent_cache": true
   },
   "outbounds": [
     {

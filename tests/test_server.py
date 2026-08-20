@@ -53,12 +53,20 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
     }
     assert dns["rules"] == [
         {
+            "query_type": ["HTTPS", "SVCB"],
+            "rule_set": "minbot-domains",
+            "action": "predefined",
+            "rcode": "NOERROR",
+        },
+        {
+            "query_type": ["A", "AAAA"],
             "rule_set": "minbot-domains",
             "action": "route",
             "server": "minbot-fakeip",
         }
     ]
     assert dns["final"] == "local"
+    assert dns["independent_cache"] is True
 
     assert config["route"]["default_domain_resolver"] == "local"
     route_rules = config["route"]["rules"]

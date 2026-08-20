@@ -16,7 +16,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.1.0/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.1.1/install-macos.sh \
   | bash
 ```
 
@@ -33,6 +33,9 @@ minbot-proxy update     # 从本仓库 main 更新 CLI
 `run` 需要管理员权限创建 TUN。allowlist 域名会由 sing-box FakeIP DNS 保留原始
 域名，再通过固定服务端公钥的 TLS HTTP 代理发送。allowlist UDP/QUIC 会被拒绝以触发
 TCP 回退；其他 TCP 与非 DNS UDP 保持直连，远程 allowlist 每 5 分钟刷新。
+
+对于现代浏览器发出的 HTTPS/SVCB DNS 查询，客户端会返回空的成功响应，使其立即
+回退到 A/AAAA FakeIP；不会再把 FakeIP 不支持的查询类型送入 FakeIP 服务器。
 
 ## Chrome
 
