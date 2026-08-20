@@ -4,13 +4,16 @@
 
 1. PAC、Chrome、Karing 或 sing-box 判断目标域名是否在 allowlist。
 2. 命中的 TCP 请求通过带 Basic Proxy Authentication 的 HTTP 正向代理发送。
-3. 服务端再次校验账号、目标域名、端口和 DNS 解析结果。
+3. 服务端再次校验账号、目标域名、端口和 DNS 解析结果。若 sing-box 保留了 CDN 的
+   实际 IP 作为 `IP:443` CONNECT 目标，服务端只在读取到 allowlist 内的 TLS SNI
+   后，按该 SNI 域名重新解析并连接上游。
 4. 非 allowlist 域名、非授权 CONNECT 端口，以及私网、回环、链路本地、保留或
    非全局 IP 均被拒绝。默认 CONNECT 端口为 `443,5228,5229,5230`，后三个用于
    Google/Firebase 推送。
 
 客户端规则只决定分流体验，不能扩大服务端权限。即使客户端规则被修改，服务端仍
-只允许当前 allowlist。
+只允许当前 allowlist。IP CONNECT 仅限公网地址和 TCP 443，必须携带合法且命中
+allowlist 的 TLS ClientHello；私网 IP、无 SNI、非 TLS 或非 allowlist SNI 都会断开。
 
 ## 公开与受保护入口
 

@@ -48,6 +48,11 @@ v1.1.0。该版本使用 TLS 加密客户端到代理的 CONNECT 请求，并拒
 Google/Firebase 使用的 TCP 5228–5230；客户端同时全局拒绝 UDP/443，让持有旧 IP
 缓存的 App 也能快速从 QUIC 回退到 TCP。
 
+若日志中的目标是 `104.16.x.x:443`、`162.125.x.x:443` 等 Cloudflare、Dropbox 或
+其他 CDN 实际 IP，并由 `outbound/http[minbot-egress]` 收到 `403 Forbidden`，升级到
+v1.3.0。服务端会在认证后的 IP CONNECT 中读取 TLS ClientHello，只在 SNI 命中
+allowlist 时按域名连接上游；无需放开任意公网 IP，也不应把 CDN IP 写入 allowlist。
+
 ## 修改在重建后消失
 
 这是默认临时状态路径的预期行为。为 `PROXY_DOMAINS_STATE_PATH` 挂载独立持久卷，
