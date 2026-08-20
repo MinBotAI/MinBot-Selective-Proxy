@@ -15,7 +15,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.0.0/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.0.1/install-macos.sh \
   | bash
 ```
 
@@ -29,8 +29,9 @@ minbot-proxy configure  # 更换账号
 minbot-proxy update     # 从本仓库 main 更新 CLI
 ```
 
-`run` 需要管理员权限创建 TUN。其他 TCP 与全部 UDP 保持直连，远程 allowlist 每
-5 分钟刷新。
+`run` 需要管理员权限创建 TUN。allowlist 域名会由 sing-box FakeIP DNS 保留原始
+域名，再交给 HTTP 代理；其他 TCP 与非 DNS UDP 保持直连，远程 allowlist 每 5 分钟
+刷新。
 
 ## Chrome
 

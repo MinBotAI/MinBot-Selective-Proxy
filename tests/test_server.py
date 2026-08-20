@@ -4,6 +4,8 @@ import asyncio
 import base64
 import json
 import socket
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +30,41 @@ def _config() -> ProxyConfig:
         password="correct horse battery staple",
         domains=("example.com", "youtube.com"),
     )
+
+
+def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        ["bash", str(repository / "install-macos.sh"), "_print-template"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    config = json.loads(result.stdout)
+
+    dns = config["dns"]
+    assert {server["tag"]: server["type"] for server in dns["servers"]} == {
+        "local": "local",
+        "minbot-fakeip": "fakeip",
+    }
+    assert dns["rules"] == [
+        {
+            "rule_set": "minbot-domains",
+            "action": "route",
+            "server": "minbot-fakeip",
+        }
+    ]
+    assert dns["final"] == "local"
+
+    assert config["route"]["default_domain_resolver"] == "local"
+    route_rules = config["route"]["rules"]
+    dns_hijack_index = route_rules.index(
+        {"protocol": "dns", "action": "hijack-dns"}
+    )
+    udp_direct_index = route_rules.index(
+        {"network": "udp", "action": "route", "outbound": "direct"}
+    )
+    assert dns_hijack_index < udp_direct_index
 
 
 def test_domain_allowlist_covers_subdomains_but_rejects_lookalikes_and_ips() -> None:

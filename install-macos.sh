@@ -58,6 +58,28 @@ emit_sing_box_config() {
       "stack": "system"
     }
   ],
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "local"
+      },
+      {
+        "type": "fakeip",
+        "tag": "minbot-fakeip",
+        "inet4_range": "198.18.0.0/15",
+        "inet6_range": "fc00::/18"
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": "minbot-domains",
+        "action": "route",
+        "server": "minbot-fakeip"
+      }
+    ],
+    "final": "local"
+  },
   "outbounds": [
     {
       "type": "http",
@@ -74,10 +96,15 @@ emit_sing_box_config() {
   ],
   "route": {
     "auto_detect_interface": true,
+    "default_domain_resolver": "local",
     "rules": [
       {
         "action": "sniff",
         "timeout": "1s"
+      },
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
       },
       {
         "network": "udp",

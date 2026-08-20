@@ -22,6 +22,11 @@
    根域名。
 4. sing-box 和 Karing 最长可能等待 5 分钟刷新远程规则。
 
+若日志显示 `outbound/http[minbot-egress]` 连接到 IP 地址并返回 `403 Forbidden`，说明
+本地仍在使用 v1.0.0 的 TUN 配置。先停止当前进程，运行 `minbot-proxy update`，再重新
+执行 `minbot-proxy check` 和 `minbot-proxy run`；v1.0.1 会通过 FakeIP DNS 让 HTTP
+代理收到 allowlist 域名，而不是 CDN 的解析后 IP。
+
 ## 修改在重建后消失
 
 这是默认临时状态路径的预期行为。为 `PROXY_DOMAINS_STATE_PATH` 挂载独立持久卷，
