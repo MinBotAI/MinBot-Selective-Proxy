@@ -179,6 +179,7 @@ def test_default_allowlist_covers_heygen_app_api_and_first_party_assets() -> Non
         ("media", "netflix.com"),
         ("developer_and_productivity", "github.com"),
         ("news_and_reference", "wikipedia.org"),
+        ("shared_infrastructure", "cloudfront.net"),
     ],
 )
 def test_default_allowlist_covers_common_blocked_service_groups(
@@ -195,7 +196,7 @@ def test_default_allowlist_is_normalized_unique_and_broad() -> None:
         for domain in domains
     )
 
-    assert len(DEFAULT_PROXY_DOMAINS) >= 175
+    assert len(DEFAULT_PROXY_DOMAINS) >= 275
     assert DEFAULT_PROXY_DOMAINS == normalize_domains(grouped_domains)
 
 
