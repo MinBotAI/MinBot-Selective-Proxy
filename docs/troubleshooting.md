@@ -24,7 +24,7 @@
 
 若日志显示 `outbound/http[minbot-egress]` 连接到 IP 地址并返回 `403 Forbidden`，说明
 本地仍在使用 v1.0.0 的 TUN 配置。先停止当前进程，运行 `minbot-proxy update`，再重新
-执行 `minbot-proxy check` 和 `minbot-proxy run`；v1.0.2 会通过 FakeIP DNS 让 HTTP
+执行 `minbot-proxy check` 和 `minbot-proxy run`；v1.1.0 会通过 FakeIP DNS 让 HTTP
 代理收到 allowlist 域名，而不是 CDN 的解析后 IP。
 
 若看到 `read: connection reset by peer`，先确认服务端 `PROXY_MAX_CONNECTIONS` 不低于
@@ -34,6 +34,10 @@
 安装器在“sing-box is already installed”后不应再静默等待。v1.0.2 会显示四阶段进度，
 优先安装正在执行的本地脚本，保留已有 Keychain 凭据；从私有 GitHub 仓库更新但未认证
 时会立即给出错误。
+
+若中国网络中出现针对 Google 等域名的快速 `connection reset by peer`，确认已升级到
+v1.1.0。该版本使用 TLS 加密客户端到代理的 CONNECT 请求，并拒绝 allowlist 的 QUIC
+流量以触发 TCP 回退；旧版明文入口会暴露 CONNECT 目标，可能被链路中间设备重置。
 
 ## 修改在重建后消失
 

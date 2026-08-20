@@ -8,7 +8,7 @@ proxies:
   - name: MinBot-Egress
     type: http
     server: 43.156.119.18
-    port: 30093
+    port: 31456
     username: REPLACE_WITH_USERNAME
     password: REPLACE_WITH_PASSWORD
 
@@ -23,7 +23,7 @@ rule-providers:
     type: http
     behavior: domain
     format: text
-    url: http://43.156.119.18:30093/domains.list
+    url: http://43.156.119.18:31456/domains.list
     path: ./ruleset/minbot-domains.list
     interval: 300
     proxy: DIRECT

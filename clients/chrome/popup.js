@@ -163,7 +163,7 @@ async function initialize() {
     "password",
   ]);
   elements.enabled.checked = Boolean(settings.enabled);
-  elements.authority.value = settings.authority || "43.156.119.18:30093";
+  elements.authority.value = settings.authority || "43.156.119.18:31456";
   elements.username.value = settings.username || "";
   elements.password.value = settings.password || "";
   if (settings.authority && settings.username && settings.password) {

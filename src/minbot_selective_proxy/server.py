@@ -17,6 +17,8 @@ import logging
 import os
 import re
 import socket
+import ssl
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -146,6 +148,34 @@ def load_config() -> ProxyConfig:
             60.0, float(os.getenv("PROXY_TUNNEL_MAX_SECONDS", "1800"))
         ),
     )
+
+
+def load_tls_context() -> ssl.SSLContext | None:
+    """Build the optional TLS server context without persisting key material."""
+    certificate_pem = os.getenv("PROXY_TLS_CERT_PEM", "")
+    private_key_pem = os.getenv("PROXY_TLS_KEY_PEM", "")
+    if not certificate_pem and not private_key_pem:
+        return None
+    if not certificate_pem or not private_key_pem:
+        raise RuntimeError(
+            "PROXY_TLS_CERT_PEM and PROXY_TLS_KEY_PEM must be configured together"
+        )
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    paths: list[str] = []
+    try:
+        for value in (certificate_pem, private_key_pem):
+            with tempfile.NamedTemporaryFile(mode="w", delete=False) as temporary:
+                temporary.write(value)
+                paths.append(temporary.name)
+            os.chmod(paths[-1], 0o600)
+        context.load_cert_chain(certfile=paths[0], keyfile=paths[1])
+    finally:
+        for path in paths:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(path)
+    return context
 
 
 def _load_additional_users(raw_value: str) -> tuple[tuple[str, str], ...]:
@@ -906,16 +936,39 @@ async def main() -> None:
     )
     config = load_config()
     port = int(os.getenv("PORT", "8080"))
+    tls_port = int(os.getenv("PROXY_TLS_PORT", "8443"))
+    tls_context = load_tls_context()
     server = SelectiveProxyServer(config)
-    listener = await asyncio.start_server(
+    listeners = [await asyncio.start_server(
         server.handle_client,
         host="0.0.0.0",
         port=port,
         limit=_HEADER_LIMIT,
         start_serving=True,
+    )]
+    if tls_context is not None:
+        listeners.append(
+            await asyncio.start_server(
+                server.handle_client,
+                host="0.0.0.0",
+                port=tls_port,
+                ssl=tls_context,
+                limit=_HEADER_LIMIT,
+                start_serving=True,
+            )
+        )
+    _LOGGER.info(
+        "proxy listeners ready plain_port=%d tls_port=%s max_connections=%d",
+        port,
+        tls_port if tls_context is not None else "disabled",
+        config.max_connections,
     )
-    async with listener:
-        await listener.serve_forever()
+    try:
+        await asyncio.gather(*(listener.serve_forever() for listener in listeners))
+    finally:
+        for listener in listeners:
+            listener.close()
+        await asyncio.gather(*(listener.wait_closed() for listener in listeners))
 
 
 if __name__ == "__main__":

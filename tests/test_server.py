@@ -22,6 +22,7 @@ from minbot_selective_proxy.server import (
     _resolve_public_addresses,
     build_pac,
     domain_is_allowed,
+    load_tls_context,
     normalize_domains,
     normalize_proxy_authority,
 )
@@ -67,7 +68,48 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
     udp_direct_index = route_rules.index(
         {"network": "udp", "action": "route", "outbound": "direct"}
     )
-    assert dns_hijack_index < udp_direct_index
+    allowlist_udp_reject_index = route_rules.index(
+        {"network": "udp", "rule_set": "minbot-domains", "action": "reject"}
+    )
+    allowlist_proxy_index = route_rules.index(
+        {
+            "rule_set": "minbot-domains",
+            "action": "route",
+            "outbound": "minbot-egress",
+        }
+    )
+    assert dns_hijack_index < allowlist_udp_reject_index < udp_direct_index
+    assert udp_direct_index < allowlist_proxy_index
+
+    outbound = next(
+        item for item in config["outbounds"] if item["tag"] == "minbot-egress"
+    )
+    assert outbound["server_port"] == 31528
+    assert outbound["tls"] == {
+        "enabled": True,
+        "server_name": "minbot-egress.local",
+        "certificate_public_key_sha256": [
+            "GVMj+hTQYmgLDC+XzCL7Sy3MTneSXdqHwUoEcQ9qrXs="
+        ],
+    }
+    assert config["route"]["rule_set"][0]["url"] == (
+        "http://43.156.119.18:31456/domains.sing-box.json"
+    )
+
+
+def test_tls_certificate_and_key_must_be_configured_together(monkeypatch) -> None:
+    monkeypatch.setenv("PROXY_TLS_CERT_PEM", "certificate only")
+    monkeypatch.delenv("PROXY_TLS_KEY_PEM", raising=False)
+
+    with pytest.raises(RuntimeError, match="must be configured together"):
+        load_tls_context()
+
+
+def test_tls_listener_is_optional(monkeypatch) -> None:
+    monkeypatch.delenv("PROXY_TLS_CERT_PEM", raising=False)
+    monkeypatch.delenv("PROXY_TLS_KEY_PEM", raising=False)
+
+    assert load_tls_context() is None
 
 
 def test_macos_installer_uses_current_script_without_git_clone(tmp_path) -> None:

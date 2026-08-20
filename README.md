@@ -1,7 +1,7 @@
 # MinBot Selective Proxy
 
 MinBot 的独立选择性代理服务。它只转发 allowlist 中的域名，其他流量保持
-直连；代理连接和 allowlist 管理均需账号认证。
+直连；macOS TUN 客户端使用 TLS 加密代理链路并固定服务端公钥。
 
 本仓库包含：
 
@@ -23,7 +23,7 @@ macOS Keychain：
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.0.2/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.1.0/install-macos.sh \
   | bash
 ```
 

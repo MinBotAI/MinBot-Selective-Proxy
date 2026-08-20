@@ -10,7 +10,7 @@
 | GitHub 仓库 | `MinBotAI/MinBot-Selective-Proxy` |
 | 分支 | `main` |
 | Dockerfile | `/Dockerfile` |
-| 容器端口 | `8080` |
+| 容器端口 | `8080`（兼容明文）、`8443`（TLS） |
 | 网络类型 | Public TCP |
 | 健康检查 | `/healthz` |
 
@@ -24,6 +24,8 @@ macOS 脚本、Karing 模板、Chrome 默认值和客户端文档。
 - `PROXY_USERNAME`
 - `PROXY_PASSWORD`
 - `PROXY_ADDITIONAL_USERS_JSON`，需要其他账号时设置 JSON 对象
+- `PROXY_TLS_CERT_PEM`、`PROXY_TLS_KEY_PEM`，必须成对设置且仅保存于 Secret
+- `PROXY_TLS_PORT=8443`
 
 可选运行参数见 [`.env.example`](../.env.example)。不要在仓库、构建参数、部署说明
 或工单中写入真实账号密码。
@@ -38,7 +40,7 @@ macOS 脚本、Karing 模板、Chrome 默认值和客户端文档。
 
 1. 从本仓库 `main` 构建镜像。
 2. 注入 Secret，保持现有账号值不变。
-3. 暴露容器 `8080` 为 Public TCP。
+3. 分别暴露容器 `8080` 和 `8443` 为 Public TCP。
 4. 等待部署状态为 `RUNNING`。
 5. 检查构建日志、运行日志和健康接口。
 6. 用未认证、已认证、非 allowlist 三类请求完成验收。

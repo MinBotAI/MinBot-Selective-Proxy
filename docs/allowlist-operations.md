@@ -18,7 +18,7 @@
 以下示例不会把密码写入命令；`curl` 会交互提示密码：
 
 ```bash
-export PROXY_ENDPOINT='http://43.156.119.18:30093'
+export PROXY_ENDPOINT='http://43.156.119.18:31456'
 export PROXY_USERNAME='<assigned-username>'
 
 curl --user "${PROXY_USERNAME}" "${PROXY_ENDPOINT}/api/domains"

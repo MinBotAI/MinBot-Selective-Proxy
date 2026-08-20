@@ -85,9 +85,14 @@ emit_sing_box_config() {
       "type": "http",
       "tag": "minbot-egress",
       "server": "43.156.119.18",
-      "server_port": 30093,
+      "server_port": 31528,
       "username": "REPLACE_WITH_USERNAME",
-      "password": "REPLACE_WITH_PASSWORD"
+      "password": "REPLACE_WITH_PASSWORD",
+      "tls": {
+        "enabled": true,
+        "server_name": "minbot-egress.local",
+        "certificate_public_key_sha256": ["GVMj+hTQYmgLDC+XzCL7Sy3MTneSXdqHwUoEcQ9qrXs="]
+      }
     },
     {
       "type": "direct",
@@ -108,6 +113,11 @@ emit_sing_box_config() {
       },
       {
         "network": "udp",
+        "rule_set": "minbot-domains",
+        "action": "reject"
+      },
+      {
+        "network": "udp",
         "action": "route",
         "outbound": "direct"
       },
@@ -123,7 +133,7 @@ emit_sing_box_config() {
         "type": "remote",
         "tag": "minbot-domains",
         "format": "source",
-        "url": "http://43.156.119.18:30093/domains.sing-box.json",
+        "url": "http://43.156.119.18:31456/domains.sing-box.json",
         "update_interval": "5m"
       }
     ]
