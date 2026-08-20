@@ -12,6 +12,7 @@ import pytest
 import minbot_selective_proxy.server as server_module
 
 from minbot_selective_proxy.server import (
+    DEFAULT_PROXY_DOMAIN_GROUPS,
     DEFAULT_PROXY_DOMAINS,
     ProxyConfig,
     SelectiveProxyServer,
@@ -167,6 +168,35 @@ def test_default_allowlist_covers_heygen_app_api_and_first_party_assets() -> Non
     assert domain_is_allowed("static.heygen.ai", DEFAULT_PROXY_DOMAINS)
     assert domain_is_allowed("files2.heygen.ai", DEFAULT_PROXY_DOMAINS)
     assert not domain_is_allowed("heygen.com.example.org", DEFAULT_PROXY_DOMAINS)
+
+
+@pytest.mark.parametrize(
+    ("group", "domain"),
+    [
+        ("ai", "claude.ai"),
+        ("google", "youtube.com"),
+        ("social_and_messaging", "telegram.org"),
+        ("media", "netflix.com"),
+        ("developer_and_productivity", "github.com"),
+        ("news_and_reference", "wikipedia.org"),
+    ],
+)
+def test_default_allowlist_covers_common_blocked_service_groups(
+    group: str, domain: str
+) -> None:
+    assert domain in DEFAULT_PROXY_DOMAIN_GROUPS[group]
+    assert domain_is_allowed(f"www.{domain}", DEFAULT_PROXY_DOMAINS)
+
+
+def test_default_allowlist_is_normalized_unique_and_broad() -> None:
+    grouped_domains = tuple(
+        domain
+        for domains in DEFAULT_PROXY_DOMAIN_GROUPS.values()
+        for domain in domains
+    )
+
+    assert len(DEFAULT_PROXY_DOMAINS) >= 175
+    assert DEFAULT_PROXY_DOMAINS == normalize_domains(grouped_domains)
 
 
 def test_pac_defaults_to_direct_and_routes_only_allowlisted_domains() -> None:
