@@ -12,6 +12,7 @@ import pytest
 import minbot_selective_proxy.server as server_module
 
 from minbot_selective_proxy.server import (
+    DEFAULT_CONNECT_PORTS,
     DEFAULT_PROXY_DOMAIN_GROUPS,
     DEFAULT_PROXY_DOMAINS,
     ProxyConfig,
@@ -19,6 +20,7 @@ from minbot_selective_proxy.server import (
     _admin_authorized,
     _authorized,
     _load_additional_users,
+    _load_allowed_connect_ports,
     _open_public_connection,
     _resolve_public_addresses,
     build_pac,
@@ -79,6 +81,9 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
     allowlist_udp_reject_index = route_rules.index(
         {"network": "udp", "rule_set": "minbot-domains", "action": "reject"}
     )
+    global_quic_reject_index = route_rules.index(
+        {"network": "udp", "port": 443, "action": "reject"}
+    )
     allowlist_proxy_index = route_rules.index(
         {
             "rule_set": "minbot-domains",
@@ -86,7 +91,8 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
             "outbound": "minbot-egress",
         }
     )
-    assert dns_hijack_index < allowlist_udp_reject_index < udp_direct_index
+    assert dns_hijack_index < global_quic_reject_index
+    assert global_quic_reject_index < allowlist_udp_reject_index < udp_direct_index
     assert udp_direct_index < allowlist_proxy_index
 
     outbound = next(
@@ -251,6 +257,16 @@ def test_additional_proxy_users_load_from_secret_json() -> None:
         _load_additional_users("[]")
 
 
+def test_connect_ports_include_google_push_ports_and_validate_overrides() -> None:
+    assert DEFAULT_CONNECT_PORTS == (443, 5228, 5229, 5230)
+    assert _load_allowed_connect_ports("5230,443,5228,5229") == DEFAULT_CONNECT_PORTS
+
+    with pytest.raises(RuntimeError, match="invalid port"):
+        _load_allowed_connect_ports("0,443")
+    with pytest.raises(RuntimeError, match="integers"):
+        _load_allowed_connect_ports("443,not-a-port")
+
+
 @pytest.mark.asyncio
 async def test_direct_pac_endpoint_is_public_but_proxy_requests_require_auth() -> None:
     proxy = SelectiveProxyServer(_config())
@@ -310,6 +326,52 @@ async def test_authenticated_proxy_still_rejects_nonallowlisted_destination() ->
 
     assert response.startswith(b"HTTP/1.1 403 Forbidden")
     assert b"outside the proxy allowlist" in response
+
+
+@pytest.mark.asyncio
+async def test_google_push_connect_ports_pass_policy_validation(monkeypatch) -> None:
+    config = ProxyConfig(
+        username="proxy",
+        password="secret",
+        domains=("google.com",),
+    )
+
+    async def fail_after_policy_validation(*args, **kwargs):
+        raise OSError("upstream dial intentionally stopped")
+
+    monkeypatch.setattr(
+        server_module, "_open_public_connection", fail_after_policy_validation
+    )
+    proxy = SelectiveProxyServer(config)
+    listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
+    port = listener.sockets[0].getsockname()[1]
+    encoded = base64.b64encode(b"proxy:secret").decode()
+
+    async def request(destination_port: int) -> bytes:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            (
+                f"CONNECT mtalk.google.com:{destination_port} HTTP/1.1\r\n"
+                f"Host: mtalk.google.com:{destination_port}\r\n"
+                f"Proxy-Authorization: Basic {encoded}\r\n\r\n"
+            ).encode()
+        )
+        await writer.drain()
+        response = await reader.read()
+        writer.close()
+        await writer.wait_closed()
+        return response
+
+    try:
+        allowed = await request(5228)
+        denied = await request(5227)
+    finally:
+        listener.close()
+        await listener.wait_closed()
+
+    assert allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
+    assert denied.startswith(b"HTTP/1.1 403 Forbidden")
+    assert b"destination port is not allowed" in denied
 
 
 @pytest.mark.asyncio

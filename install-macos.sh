@@ -120,6 +120,11 @@ emit_sing_box_config() {
       },
       {
         "network": "udp",
+        "port": 443,
+        "action": "reject"
+      },
+      {
+        "network": "udp",
         "rule_set": "minbot-domains",
         "action": "reject"
       },

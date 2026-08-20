@@ -332,6 +332,7 @@ DEFAULT_PROXY_DOMAINS = tuple(
         }
     )
 )
+DEFAULT_CONNECT_PORTS = (443, 5228, 5229, 5230)
 
 _HEADER_LIMIT = 65_536
 _ADMIN_BODY_LIMIT = 16_384
@@ -366,6 +367,7 @@ class ProxyConfig:
     connect_timeout_seconds: float = 10.0
     idle_timeout_seconds: float = 120.0
     tunnel_max_seconds: float = 1_800.0
+    allowed_connect_ports: tuple[int, ...] = DEFAULT_CONNECT_PORTS
 
 
 def load_config() -> ProxyConfig:
@@ -395,6 +397,9 @@ def load_config() -> ProxyConfig:
         ),
         tunnel_max_seconds=max(
             60.0, float(os.getenv("PROXY_TUNNEL_MAX_SECONDS", "1800"))
+        ),
+        allowed_connect_ports=_load_allowed_connect_ports(
+            os.getenv("PROXY_ALLOWED_CONNECT_PORTS", "")
         ),
     )
 
@@ -445,6 +450,18 @@ def _load_additional_users(raw_value: str) -> tuple[tuple[str, str], ...]:
             raise RuntimeError("proxy usernames and passwords cannot be empty")
         users.append((additional_username, raw_password))
     return tuple(users)
+
+
+def _load_allowed_connect_ports(raw_value: str) -> tuple[int, ...]:
+    if not raw_value.strip():
+        return DEFAULT_CONNECT_PORTS
+    try:
+        ports = {int(value.strip()) for value in raw_value.split(",")}
+    except ValueError as exc:
+        raise RuntimeError("PROXY_ALLOWED_CONNECT_PORTS must contain integers") from exc
+    if not ports or any(port < 1 or port > 65_535 for port in ports):
+        raise RuntimeError("PROXY_ALLOWED_CONNECT_PORTS contains an invalid port")
+    return tuple(sorted(ports))
 
 
 def normalize_domains(values: object) -> tuple[str, ...]:
@@ -841,8 +858,8 @@ class SelectiveProxyServer:
         client_reader: asyncio.StreamReader,
     ) -> None:
         host, port = _split_authority(target, default_port=443)
-        if port != 443:
-            raise PermissionError("only HTTPS port 443 is allowed")
+        if port not in self.config.allowed_connect_ports:
+            raise PermissionError("destination port is not allowed")
         upstream_reader, upstream_writer = await _open_public_connection(
             host,
             port,

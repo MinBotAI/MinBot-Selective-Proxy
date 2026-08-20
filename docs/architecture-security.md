@@ -5,8 +5,9 @@
 1. PAC、Chrome、Karing 或 sing-box 判断目标域名是否在 allowlist。
 2. 命中的 TCP 请求通过带 Basic Proxy Authentication 的 HTTP 正向代理发送。
 3. 服务端再次校验账号、目标域名、端口和 DNS 解析结果。
-4. 非 allowlist 域名、非 80/443 端口，以及私网、回环、链路本地、保留或非全局
-   IP 均被拒绝。
+4. 非 allowlist 域名、非授权 CONNECT 端口，以及私网、回环、链路本地、保留或
+   非全局 IP 均被拒绝。默认 CONNECT 端口为 `443,5228,5229,5230`，后三个用于
+   Google/Firebase 推送。
 
 客户端规则只决定分流体验，不能扩大服务端权限。即使客户端规则被修改，服务端仍
 只允许当前 allowlist。
@@ -60,5 +61,6 @@ macOS TUN 客户端连接独立 TLS 代理入口，并用仓库内发布的 SHA-
 - `PROXY_CONNECT_TIMEOUT_SECONDS`，默认 `10`
 - `PROXY_IDLE_TIMEOUT_SECONDS`，默认 `120`
 - `PROXY_TUNNEL_MAX_SECONDS`，默认 `1800`
+- `PROXY_ALLOWED_CONNECT_PORTS`，默认 `443,5228,5229,5230`
 
 本服务面向少量受信用户，不应作为公开匿名代理。

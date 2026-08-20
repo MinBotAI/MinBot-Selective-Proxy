@@ -16,7 +16,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.2.1/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.2.2/install-macos.sh \
   | bash
 ```
 
@@ -37,6 +37,9 @@ TCP 回退；其他 TCP 与非 DNS UDP 保持直连，远程 allowlist 每 5 分
 对于现代浏览器发出的 HTTPS/SVCB DNS 查询，客户端会统一返回空的成功响应，使其
 立即回退到 A/AAAA；既不会把不支持的查询类型送入 FakeIP，也不会因本地 DNS 对这类
 扩展查询超时而拖慢页面。
+
+所有 UDP/443 会快速拒绝以强制 App 和浏览器回退到 TCP，包含仍持有旧真实 IP 缓存的
+进程；这避免未带域名元数据的 QUIC 流量误走直连并等待超时。
 
 ## Chrome
 

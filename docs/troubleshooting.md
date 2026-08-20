@@ -44,6 +44,10 @@ v1.1.0。该版本使用 TLS 加密客户端到代理的 CONNECT 请求，并拒
 成功响应，避免浏览器在 DNS 阶段失败、等待超时或使用 HTTPS 记录中的真实 IP 绕过
 域名代理。
 
+若 `mtalk.google.com:5228` 返回 `403 Forbidden`，升级到 v1.2.2。服务端默认允许
+Google/Firebase 使用的 TCP 5228–5230；客户端同时全局拒绝 UDP/443，让持有旧 IP
+缓存的 App 也能快速从 QUIC 回退到 TCP。
+
 ## 修改在重建后消失
 
 这是默认临时状态路径的预期行为。为 `PROXY_DOMAINS_STATE_PATH` 挂载独立持久卷，
