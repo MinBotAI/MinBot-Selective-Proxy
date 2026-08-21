@@ -134,6 +134,13 @@ emit_sing_box_config() {
         "outbound": "direct"
       },
       {
+        "network": "tcp",
+        "port": 443,
+        "process_path_regex": ["/(ChatGPT|Codex)\\.app/Contents/"],
+        "action": "route",
+        "outbound": "minbot-egress"
+      },
+      {
         "rule_set": "minbot-domains",
         "action": "route",
         "outbound": "minbot-egress"

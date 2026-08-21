@@ -332,7 +332,10 @@ DEFAULT_PROXY_DOMAINS = tuple(
         }
     )
 )
-DEFAULT_CONNECT_PORTS = (443, 5228, 5229, 5230)
+DEFAULT_CONNECT_PORTS = (80, 443, 5228, 5229, 5230)
+DEFAULT_PROXY_IP_CIDRS = (
+    "157.240.0.0/16",
+)
 
 _HEADER_LIMIT = 65_536
 _TLS_CLIENT_HELLO_LIMIT = 65_536
@@ -735,6 +738,7 @@ class SelectiveProxyServer:
                     "version": 3,
                     "rules": [
                         {"domain_suffix": list(self.allowlist.domains)},
+                        {"ip_cidr": list(DEFAULT_PROXY_IP_CIDRS)},
                     ],
                 },
                 ensure_ascii=True,

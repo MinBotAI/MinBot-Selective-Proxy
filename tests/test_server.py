@@ -15,6 +15,7 @@ from minbot_selective_proxy.server import (
     DEFAULT_CONNECT_PORTS,
     DEFAULT_PROXY_DOMAIN_GROUPS,
     DEFAULT_PROXY_DOMAINS,
+    DEFAULT_PROXY_IP_CIDRS,
     ProxyConfig,
     SelectiveProxyServer,
     _admin_authorized,
@@ -113,9 +114,18 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
             "outbound": "minbot-egress",
         }
     )
+    codex_proxy_index = route_rules.index(
+        {
+            "network": "tcp",
+            "port": 443,
+            "process_path_regex": ["/(ChatGPT|Codex)\\.app/Contents/"],
+            "action": "route",
+            "outbound": "minbot-egress",
+        }
+    )
     assert dns_hijack_index < global_quic_reject_index
     assert global_quic_reject_index < allowlist_udp_reject_index < udp_direct_index
-    assert udp_direct_index < allowlist_proxy_index
+    assert udp_direct_index < codex_proxy_index < allowlist_proxy_index
 
     outbound = next(
         item for item in config["outbounds"] if item["tag"] == "minbot-egress"
@@ -279,9 +289,12 @@ def test_additional_proxy_users_load_from_secret_json() -> None:
         _load_additional_users("[]")
 
 
-def test_connect_ports_include_google_push_ports_and_validate_overrides() -> None:
-    assert DEFAULT_CONNECT_PORTS == (443, 5228, 5229, 5230)
-    assert _load_allowed_connect_ports("5230,443,5228,5229") == DEFAULT_CONNECT_PORTS
+def test_connect_ports_include_http_and_google_push_ports() -> None:
+    assert DEFAULT_CONNECT_PORTS == (80, 443, 5228, 5229, 5230)
+    assert (
+        _load_allowed_connect_ports("5230,80,443,5228,5229")
+        == DEFAULT_CONNECT_PORTS
+    )
 
     with pytest.raises(RuntimeError, match="invalid port"):
         _load_allowed_connect_ports("0,443")
@@ -511,7 +524,38 @@ async def test_ip_connect_rejects_private_addresses_before_opening_tunnel() -> N
 
 
 @pytest.mark.asyncio
-async def test_google_push_connect_ports_pass_policy_validation(monkeypatch) -> None:
+async def test_ip_connect_rejects_non_tls_port_before_opening_tunnel() -> None:
+    config = _config()
+    proxy = SelectiveProxyServer(config)
+    listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
+    proxy_port = listener.sockets[0].getsockname()[1]
+    encoded = base64.b64encode(
+        f"{config.username}:{config.password}".encode()
+    ).decode()
+    reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+    writer.write(
+        (
+            "CONNECT 157.240.7.20:80 HTTP/1.1\r\n"
+            "Host: 157.240.7.20:80\r\n"
+            f"Proxy-Authorization: Basic {encoded}\r\n\r\n"
+        ).encode()
+    )
+    await writer.drain()
+
+    response = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    listener.close()
+    await listener.wait_closed()
+
+    assert response.startswith(b"HTTP/1.1 403 Forbidden")
+    assert b"only supported for TLS port 443" in response
+
+
+@pytest.mark.asyncio
+async def test_http_and_google_push_connect_ports_pass_policy_validation(
+    monkeypatch,
+) -> None:
     config = ProxyConfig(
         username="proxy",
         password="secret",
@@ -529,12 +573,12 @@ async def test_google_push_connect_ports_pass_policy_validation(monkeypatch) -> 
     port = listener.sockets[0].getsockname()[1]
     encoded = base64.b64encode(b"proxy:secret").decode()
 
-    async def request(destination_port: int) -> bytes:
+    async def request(host: str, destination_port: int) -> bytes:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(
             (
-                f"CONNECT mtalk.google.com:{destination_port} HTTP/1.1\r\n"
-                f"Host: mtalk.google.com:{destination_port}\r\n"
+                f"CONNECT {host}:{destination_port} HTTP/1.1\r\n"
+                f"Host: {host}:{destination_port}\r\n"
                 f"Proxy-Authorization: Basic {encoded}\r\n\r\n"
             ).encode()
         )
@@ -545,13 +589,15 @@ async def test_google_push_connect_ports_pass_policy_validation(monkeypatch) -> 
         return response
 
     try:
-        allowed = await request(5228)
-        denied = await request(5227)
+        http_allowed = await request("clients2.google.com", 80)
+        push_allowed = await request("mtalk.google.com", 5228)
+        denied = await request("mtalk.google.com", 5227)
     finally:
         listener.close()
         await listener.wait_closed()
 
-    assert allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
+    assert http_allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
+    assert push_allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
     assert denied.startswith(b"HTTP/1.1 403 Forbidden")
     assert b"destination port is not allowed" in denied
 
@@ -660,7 +706,10 @@ async def test_allowlist_api_requires_auth_and_updates_pac(tmp_path) -> None:
     sing_box_payload = json.loads(sing_box_rule_set.split(b"\r\n\r\n", 1)[1])
     assert sing_box_payload == {
         "version": 3,
-        "rules": [{"domain_suffix": ["example.com", "youtube.com"]}],
+        "rules": [
+            {"domain_suffix": ["example.com", "youtube.com"]},
+            {"ip_cidr": list(DEFAULT_PROXY_IP_CIDRS)},
+        ],
     }
     assert removed.startswith(b"HTTP/1.1 200 OK")
     assert b'"example.com"' not in removed

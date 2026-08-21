@@ -16,7 +16,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.0/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.1/install-macos.sh \
   | bash
 ```
 
@@ -40,6 +40,10 @@ TCP 回退；其他 TCP 与非 DNS UDP 保持直连，远程 allowlist 每 5 分
 
 所有 UDP/443 会快速拒绝以强制 App 和浏览器回退到 TCP，包含仍持有旧真实 IP 缓存的
 进程；这避免未带域名元数据的 QUIC 流量误走直连并等待超时。
+
+Codex 与 ChatGPT 桌面进程的 TCP/443 会始终交给加密代理，再由服务端使用 TLS SNI
+allowlist 做最终校验。这能覆盖 App 在代理启动前缓存真实 IP 的情况，同时不扩大服务端
+允许访问的域名范围。远程规则还包含少量已确认的受限服务 IP 恢复段。
 
 ## Chrome
 

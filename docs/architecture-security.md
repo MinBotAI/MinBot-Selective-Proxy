@@ -8,8 +8,8 @@
    实际 IP 作为 `IP:443` CONNECT 目标，服务端只在读取到 allowlist 内的 TLS SNI
    后，按该 SNI 域名重新解析并连接上游。
 4. 非 allowlist 域名、非授权 CONNECT 端口，以及私网、回环、链路本地、保留或
-   非全局 IP 均被拒绝。默认 CONNECT 端口为 `443,5228,5229,5230`，后三个用于
-   Google/Firebase 推送。
+   非全局 IP 均被拒绝。默认 CONNECT 端口为 `80,443,5228,5229,5230`；80 用于
+   TUN HTTP 出站，后三个用于 Google/Firebase 推送。
 
 客户端规则只决定分流体验，不能扩大服务端权限。即使客户端规则被修改，服务端仍
 只允许当前 allowlist。IP CONNECT 仅限公网地址和 TCP 443，必须携带合法且命中
@@ -64,6 +64,6 @@ macOS TUN 客户端连接独立 TLS 代理入口，并用仓库内发布的 SHA-
 - `PROXY_CONNECT_TIMEOUT_SECONDS`，默认 `10`
 - `PROXY_IDLE_TIMEOUT_SECONDS`，默认 `120`
 - `PROXY_TUNNEL_MAX_SECONDS`，默认 `1800`
-- `PROXY_ALLOWED_CONNECT_PORTS`，默认 `443,5228,5229,5230`
+- `PROXY_ALLOWED_CONNECT_PORTS`，默认 `80,443,5228,5229,5230`
 
 本服务面向少量受信用户，不应作为公开匿名代理。
