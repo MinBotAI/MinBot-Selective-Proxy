@@ -77,8 +77,17 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
 
     dns = config["dns"]
     assert {server["tag"]: server["type"] for server in dns["servers"]} == {
-        "local": "local",
+        "alidns-doh": "https",
         "minbot-fakeip": "fakeip",
+    }
+    alidns = next(server for server in dns["servers"] if server["tag"] == "alidns-doh")
+    assert alidns == {
+        "type": "https",
+        "tag": "alidns-doh",
+        "server": "223.5.5.5",
+        "server_port": 443,
+        "path": "/dns-query",
+        "tls": {"enabled": True, "server_name": "dns.alidns.com"},
     }
     assert dns["rules"] == [
         {
@@ -93,10 +102,10 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
             "server": "minbot-fakeip",
         }
     ]
-    assert dns["final"] == "local"
+    assert dns["final"] == "alidns-doh"
     assert dns["independent_cache"] is True
 
-    assert config["route"]["default_domain_resolver"] == "local"
+    assert config["route"]["default_domain_resolver"] == "alidns-doh"
     route_rules = config["route"]["rules"]
     dns_hijack_index = route_rules.index(
         {"protocol": "dns", "action": "hijack-dns"}

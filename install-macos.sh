@@ -103,8 +103,15 @@ emit_sing_box_config() {
   "dns": {
     "servers": [
       {
-        "type": "local",
-        "tag": "local"
+        "type": "https",
+        "tag": "alidns-doh",
+        "server": "223.5.5.5",
+        "server_port": 443,
+        "path": "/dns-query",
+        "tls": {
+          "enabled": true,
+          "server_name": "dns.alidns.com"
+        }
       },
       {
         "type": "fakeip",
@@ -126,7 +133,7 @@ emit_sing_box_config() {
         "server": "minbot-fakeip"
       }
     ],
-    "final": "local",
+    "final": "alidns-doh",
     "independent_cache": true
   },
   "outbounds": [
@@ -150,7 +157,7 @@ emit_sing_box_config() {
   ],
   "route": {
     "auto_detect_interface": true,
-    "default_domain_resolver": "local",
+    "default_domain_resolver": "alidns-doh",
     "rules": [
       {
         "action": "sniff",

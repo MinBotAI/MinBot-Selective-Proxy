@@ -16,7 +16,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.3/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.4/install-macos.sh \
   | bash
 ```
 
@@ -42,7 +42,8 @@ minbot-proxy update     # 从本仓库 main 更新 CLI
 默认日志级别为 `warn`，不会再输出每条连接的 INFO 记录。
 
 allowlist 域名会由 sing-box FakeIP DNS 保留原始
-域名，再通过固定服务端公钥的 TLS HTTP 代理发送。allowlist UDP/QUIC 会被拒绝以触发
+域名，再通过固定服务端公钥的 TLS HTTP 代理发送。普通域名使用阿里公共 DNS 的
+DoH/443 解析，避免本地 UDP/53 丢包造成 10 秒等待。allowlist UDP/QUIC 会被拒绝以触发
 TCP 回退；其他 TCP 与非 DNS UDP 保持直连，远程 allowlist 每 5 分钟刷新。
 
 对于现代浏览器发出的 HTTPS/SVCB DNS 查询，客户端会统一返回空的成功响应，使其
