@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import plistlib
 import socket
 import subprocess
 from pathlib import Path
@@ -71,6 +72,8 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
         text=True,
     )
     config = json.loads(result.stdout)
+
+    assert config["log"] == {"level": "warn", "timestamp": True}
 
     dns = config["dns"]
     assert {server["tag"]: server["type"] for server in dns["servers"]} == {
@@ -141,6 +144,32 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
     assert config["route"]["rule_set"][0]["url"] == (
         "http://43.156.119.18:31456/domains.sing-box.json"
     )
+
+
+def test_macos_installer_supports_launchd_background_service() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    installer = (repository / "install-macos.sh").read_text()
+    result = subprocess.run(
+        ["bash", str(repository / "install-macos.sh"), "_print-launchd-template"],
+        check=True,
+        capture_output=True,
+    )
+    plist = plistlib.loads(result.stdout)
+
+    assert 'readonly LAUNCHD_LABEL="ai.minbot.selective-proxy"' in installer
+    assert plist["Label"] == "ai.minbot.selective-proxy"
+    assert plist["RunAtLoad"] is True
+    assert plist["KeepAlive"] is True
+    assert plist["ProgramArguments"] == [
+        "/opt/homebrew/bin/sing-box",
+        "run",
+        "-c",
+        "/Library/Application Support/MinBot Selective Proxy/config.json",
+    ]
+    assert 'sudo launchctl bootstrap system "${DAEMON_PLIST}"' in installer
+    assert 'sudo launchctl enable "system/${LAUNCHD_LABEL}"' in installer
+    assert 'sudo launchctl kickstart -k "system/${LAUNCHD_LABEL}"' in installer
+    assert 'sudo install -m 0600 -o root -g wheel' in installer
 
 
 def test_tls_certificate_and_key_must_be_configured_together(monkeypatch) -> None:

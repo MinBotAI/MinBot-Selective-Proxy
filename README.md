@@ -27,11 +27,24 @@ curl --fail --silent --show-error --location \
   | bash
 ```
 
-安装完成后运行：
+安装完成后，建议启用 macOS 原生 `launchd` 后台服务：
 
 ```bash
-minbot-proxy run
+minbot-proxy enable
 ```
+
+服务会立即启动，并在开机后自动运行。TUN 需要系统权限，因此启用时会请求一次
+管理员密码；生成的私密配置仅保存为 root 可读（权限 `600`），不会写入仓库。
+
+```bash
+minbot-proxy status    # 查看运行状态
+minbot-proxy logs      # 最近 100 行重要日志
+minbot-proxy disable   # 停止并禁用自动启动
+minbot-proxy run       # 需要调试时在前台运行
+```
+
+客户端日志默认使用 `warn` 级别，仅保留告警和错误，避免输出每条连接记录。更新脚本或
+修改账号后，再执行一次 `minbot-proxy enable`，即可刷新后台配置并重启服务。
 
 ### Chrome
 

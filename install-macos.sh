@@ -8,7 +8,13 @@ readonly KEYCHAIN_SERVICE="ai.minbot.selective-proxy"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/minbot-selective-proxy"
 readonly USERNAME_FILE="${CONFIG_DIR}/username"
 readonly INSTALL_NAME="minbot-proxy"
+readonly LAUNCHD_LABEL="ai.minbot.selective-proxy"
+readonly DAEMON_DIR="/Library/Application Support/MinBot Selective Proxy"
+readonly DAEMON_CONFIG="${DAEMON_DIR}/config.json"
+readonly DAEMON_PLIST="/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist"
+readonly DAEMON_LOG="/var/log/minbot-selective-proxy.log"
 RUNTIME_CONFIG=""
+LAUNCHD_PLIST_TEMP=""
 
 usage() {
   cat <<'EOF'
@@ -17,6 +23,10 @@ Usage:
   minbot-proxy configure   Change the proxy username or Keychain password
   minbot-proxy check       Validate the generated sing-box configuration
   minbot-proxy run         Run the all-app TUN proxy in the foreground
+  minbot-proxy enable      Enable and start automatic background operation
+  minbot-proxy disable     Stop and disable automatic background operation
+  minbot-proxy status      Show the background service status
+  minbot-proxy logs        Show recent important background logs
   minbot-proxy update      Download the latest script from GitHub
 EOF
 }
@@ -39,13 +49,45 @@ cleanup_runtime_config() {
   if [[ -n "${RUNTIME_CONFIG}" && -f "${RUNTIME_CONFIG}" ]]; then
     rm -f -- "${RUNTIME_CONFIG}"
   fi
+  if [[ -n "${LAUNCHD_PLIST_TEMP}" && -f "${LAUNCHD_PLIST_TEMP}" ]]; then
+    rm -f -- "${LAUNCHD_PLIST_TEMP}"
+  fi
+}
+
+emit_launchd_plist() {
+  local sing_box_path="$1"
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${sing_box_path}</string>
+    <string>run</string>
+    <string>-c</string>
+    <string>${DAEMON_CONFIG}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${DAEMON_LOG}</string>
+  <key>StandardErrorPath</key>
+  <string>${DAEMON_LOG}</string>
+</dict>
+</plist>
+EOF
 }
 
 emit_sing_box_config() {
   cat <<'JSON'
 {
   "log": {
-    "level": "info",
+    "level": "warn",
     "timestamp": true
   },
   "inbounds": [
@@ -302,6 +344,58 @@ run_proxy() {
   sudo sing-box run -c "${RUNTIME_CONFIG}"
 }
 
+enable_daemon() {
+  require_macos
+  render_private_config
+  trap cleanup_runtime_config EXIT INT TERM
+
+  local sing_box_path
+  sing_box_path="$(command -v sing-box)"
+  sing-box check -c "${RUNTIME_CONFIG}"
+  LAUNCHD_PLIST_TEMP="$(mktemp "${TMPDIR:-/tmp}/minbot-launchd.XXXXXX")"
+  emit_launchd_plist "${sing_box_path}" > "${LAUNCHD_PLIST_TEMP}"
+  /usr/bin/plutil -lint "${LAUNCHD_PLIST_TEMP}" >/dev/null
+  sudo install -d -m 0700 "${DAEMON_DIR}"
+  sudo install -m 0600 -o root -g wheel "${RUNTIME_CONFIG}" "${DAEMON_CONFIG}"
+  sudo install -m 0644 -o root -g wheel "${LAUNCHD_PLIST_TEMP}" "${DAEMON_PLIST}"
+
+  if sudo launchctl print "system/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
+    sudo launchctl bootout "system/${LAUNCHD_LABEL}"
+  fi
+  sudo launchctl bootstrap system "${DAEMON_PLIST}"
+  sudo launchctl enable "system/${LAUNCHD_LABEL}"
+  sudo launchctl kickstart -k "system/${LAUNCHD_LABEL}"
+  echo "MinBot selective proxy is enabled and running in the background."
+  echo "Check it with: ${INSTALL_NAME} status"
+}
+
+disable_daemon() {
+  require_macos
+  if sudo launchctl print "system/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
+    sudo launchctl bootout "system/${LAUNCHD_LABEL}"
+  fi
+  sudo launchctl disable "system/${LAUNCHD_LABEL}"
+  echo "MinBot selective proxy background service is disabled."
+}
+
+daemon_status() {
+  require_macos
+  if sudo launchctl print "system/${LAUNCHD_LABEL}"; then
+    exit 0
+  fi
+  echo "MinBot selective proxy background service is not running." >&2
+  exit 1
+}
+
+daemon_logs() {
+  require_macos
+  if [[ ! -f "${DAEMON_LOG}" ]]; then
+    echo "No background log has been created yet."
+    return
+  fi
+  sudo tail -n 100 "${DAEMON_LOG}"
+}
+
 install_all() {
   require_macos
   echo "[1/4] Checking sing-box..."
@@ -317,7 +411,7 @@ install_all() {
   echo "[4/4] Validating the generated configuration..."
   check_config
   echo
-  echo "Setup complete. Start the proxy with: ${INSTALL_NAME} run"
+  echo "Setup complete. Enable automatic background operation with: ${INSTALL_NAME} enable"
 }
 
 case "${1:-install}" in
@@ -334,6 +428,18 @@ case "${1:-install}" in
   run)
     run_proxy
     ;;
+  enable)
+    enable_daemon
+    ;;
+  disable)
+    disable_daemon
+    ;;
+  status)
+    daemon_status
+    ;;
+  logs)
+    daemon_logs
+    ;;
   update)
     require_macos
     install_cli update
@@ -343,6 +449,9 @@ case "${1:-install}" in
     ;;
   _print-template)
     emit_sing_box_config
+    ;;
+  _print-launchd-template)
+    emit_launchd_plist "/opt/homebrew/bin/sing-box"
     ;;
   *)
     usage

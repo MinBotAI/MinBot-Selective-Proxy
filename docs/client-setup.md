@@ -24,13 +24,24 @@ curl --fail --silent --show-error --location \
 Keychain 提示录入密码。
 
 ```bash
-minbot-proxy run        # 前台运行；Ctrl-C 停止
+minbot-proxy enable     # 后台运行，并在开机后自动启动
+minbot-proxy status     # 查看后台服务状态
+minbot-proxy logs       # 最近 100 行告警和错误
+minbot-proxy disable    # 停止并禁用自动启动
+minbot-proxy run        # 仅调试时前台运行；Ctrl-C 停止
 minbot-proxy check      # 检查配置
 minbot-proxy configure  # 更换账号
 minbot-proxy update     # 从本仓库 main 更新 CLI
 ```
 
-`run` 需要管理员权限创建 TUN。allowlist 域名会由 sing-box FakeIP DNS 保留原始
+`enable` 使用系统级 `launchd`，因为 TUN 网络接口需要 root 权限。命令会请求一次
+管理员密码，将生成后的配置保存到
+`/Library/Application Support/MinBot Selective Proxy/config.json`，并限制为仅 root
+可读。更新脚本或修改代理账号后，需要再次执行 `minbot-proxy enable` 刷新配置。
+
+默认日志级别为 `warn`，不会再输出每条连接的 INFO 记录。
+
+allowlist 域名会由 sing-box FakeIP DNS 保留原始
 域名，再通过固定服务端公钥的 TLS HTTP 代理发送。allowlist UDP/QUIC 会被拒绝以触发
 TCP 回退；其他 TCP 与非 DNS UDP 保持直连，远程 allowlist 每 5 分钟刷新。
 
