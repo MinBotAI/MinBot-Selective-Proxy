@@ -303,6 +303,8 @@ DEFAULT_PROXY_IP_CIDRS = (
 )
 
 _HEADER_LIMIT = 65_536
+_TLS_CLIENT_HELLO_LIMIT = 65_536
+_TLS_RECORD_LIMIT = 18_432
 _ADMIN_BODY_LIMIT = 16_384
 _PROXY_HOST_PATTERN = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
 _ALLOWED_HTTP_METHODS = frozenset(
@@ -811,6 +813,14 @@ class SelectiveProxyServer:
         client_reader: asyncio.StreamReader,
     ) -> None:
         host, port = _split_authority(target, default_port=443)
+        if _is_ip_literal(host) and port == 443:
+            await self._handle_tls_ip_connect(
+                host,
+                port,
+                client_writer,
+                client_reader,
+            )
+            return
         upstream_reader, upstream_writer = await _open_public_connection(
             host,
             port,
@@ -832,6 +842,55 @@ class SelectiveProxyServer:
             upstream_writer.close()
             with contextlib.suppress(Exception):
                 await upstream_writer.wait_closed()
+
+    async def _handle_tls_ip_connect(
+        self,
+        host: str,
+        port: int,
+        client_writer: asyncio.StreamWriter,
+        client_reader: asyncio.StreamReader,
+    ) -> None:
+        """Recover a TLS hostname from an authenticated public-IP CONNECT."""
+        _require_public_ip(host)
+        client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        await client_writer.drain()
+
+        upstream_writer: asyncio.StreamWriter | None = None
+        try:
+            server_name, client_hello = await _read_tls_client_hello_sni(
+                client_reader,
+                timeout=self.config.connect_timeout_seconds,
+            )
+            upstream_reader, upstream_writer = await _open_public_connection(
+                server_name,
+                port,
+                self.config,
+            )
+            upstream_writer.write(client_hello)
+            await upstream_writer.drain()
+            with contextlib.suppress(TimeoutError, ConnectionError, OSError):
+                async with asyncio.timeout(self.config.tunnel_max_seconds):
+                    await _relay_bidirectionally(
+                        client_reader,
+                        client_writer,
+                        upstream_reader,
+                        upstream_writer,
+                        idle_timeout=self.config.idle_timeout_seconds,
+                    )
+        except (
+            asyncio.IncompleteReadError,
+            ConnectionError,
+            OSError,
+            PermissionError,
+            TimeoutError,
+            ValueError,
+        ):
+            pass
+        finally:
+            if upstream_writer is not None:
+                upstream_writer.close()
+                with contextlib.suppress(Exception):
+                    await upstream_writer.wait_closed()
 
     async def _handle_http(
         self,
@@ -1059,6 +1118,130 @@ def _is_ip_literal(host: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _require_public_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+    except ValueError as exc:
+        raise PermissionError("destination is not an IP address") from exc
+    if not address.is_global:
+        raise PermissionError("destination did not resolve to a public address")
+    return address
+
+
+async def _read_tls_client_hello_sni(
+    reader: asyncio.StreamReader,
+    *,
+    timeout: float,
+) -> tuple[str, bytes]:
+    """Read a bounded TLS ClientHello and return its normalized SNI and bytes."""
+    records = bytearray()
+    handshake = bytearray()
+    expected_handshake_size: int | None = None
+
+    async with asyncio.timeout(timeout):
+        while expected_handshake_size is None or len(handshake) < expected_handshake_size:
+            header = await reader.readexactly(5)
+            if header[0] != 22:
+                raise PermissionError("TLS ClientHello is required")
+            record_size = int.from_bytes(header[3:5], "big")
+            if record_size <= 0 or record_size > _TLS_RECORD_LIMIT:
+                raise ValueError("invalid TLS record size")
+            if len(records) + 5 + record_size > _TLS_CLIENT_HELLO_LIMIT:
+                raise ValueError("TLS ClientHello is too large")
+            payload = await reader.readexactly(record_size)
+            records.extend(header)
+            records.extend(payload)
+            handshake.extend(payload)
+
+            if expected_handshake_size is None and len(handshake) >= 4:
+                if handshake[0] != 1:
+                    raise PermissionError("TLS ClientHello is required")
+                expected_handshake_size = 4 + int.from_bytes(handshake[1:4], "big")
+                if expected_handshake_size > _TLS_CLIENT_HELLO_LIMIT:
+                    raise ValueError("TLS ClientHello is too large")
+
+    if expected_handshake_size is None:
+        raise ValueError("incomplete TLS ClientHello")
+    server_name = _parse_tls_client_hello_sni(bytes(handshake[:expected_handshake_size]))
+    return server_name, bytes(records)
+
+
+def _parse_tls_client_hello_sni(handshake: bytes) -> str:
+    if len(handshake) < 4 or handshake[0] != 1:
+        raise PermissionError("TLS ClientHello is required")
+    body_size = int.from_bytes(handshake[1:4], "big")
+    if body_size != len(handshake) - 4:
+        raise ValueError("invalid TLS ClientHello size")
+    body = memoryview(handshake)[4:]
+    cursor = 34
+    if len(body) < cursor + 1:
+        raise ValueError("truncated TLS ClientHello")
+
+    session_id_size = body[cursor]
+    cursor += 1 + session_id_size
+    if len(body) < cursor + 2:
+        raise ValueError("truncated TLS cipher suites")
+    cipher_suites_size = int.from_bytes(body[cursor : cursor + 2], "big")
+    if cipher_suites_size < 2 or cipher_suites_size % 2:
+        raise ValueError("invalid TLS cipher suites")
+    cursor += 2 + cipher_suites_size
+    if len(body) < cursor + 1:
+        raise ValueError("truncated TLS compression methods")
+    compression_size = body[cursor]
+    cursor += 1 + compression_size
+    if len(body) < cursor + 2:
+        raise PermissionError("TLS SNI is required")
+
+    extensions_size = int.from_bytes(body[cursor : cursor + 2], "big")
+    cursor += 2
+    extensions_end = cursor + extensions_size
+    if extensions_end != len(body):
+        raise ValueError("invalid TLS extensions size")
+
+    while cursor < extensions_end:
+        if cursor + 4 > extensions_end:
+            raise ValueError("truncated TLS extension")
+        extension_type = int.from_bytes(body[cursor : cursor + 2], "big")
+        extension_size = int.from_bytes(body[cursor + 2 : cursor + 4], "big")
+        cursor += 4
+        extension_end = cursor + extension_size
+        if extension_end > extensions_end:
+            raise ValueError("truncated TLS extension data")
+        if extension_type == 0:
+            return _parse_tls_sni_extension(bytes(body[cursor:extension_end]))
+        cursor = extension_end
+    raise PermissionError("TLS SNI is required")
+
+
+def _parse_tls_sni_extension(extension: bytes) -> str:
+    if len(extension) < 2:
+        raise ValueError("truncated TLS SNI extension")
+    names_size = int.from_bytes(extension[:2], "big")
+    if names_size != len(extension) - 2:
+        raise ValueError("invalid TLS SNI extension size")
+    cursor = 2
+    while cursor < len(extension):
+        if cursor + 3 > len(extension):
+            raise ValueError("truncated TLS server name")
+        name_type = extension[cursor]
+        name_size = int.from_bytes(extension[cursor + 1 : cursor + 3], "big")
+        cursor += 3
+        name_end = cursor + name_size
+        if name_end > len(extension):
+            raise ValueError("truncated TLS server name value")
+        if name_type == 0:
+            try:
+                raw_name = extension[cursor:name_end].decode("ascii")
+            except UnicodeDecodeError as exc:
+                raise PermissionError("TLS server name must be ASCII") from exc
+            normalized = normalize_domains([raw_name])
+            if len(normalized) != 1 or _is_ip_literal(normalized[0]):
+                raise PermissionError("invalid TLS server name")
+            return normalized[0]
+        cursor = name_end
+    raise PermissionError("TLS SNI hostname is required")
 
 
 async def _relay_bidirectionally(

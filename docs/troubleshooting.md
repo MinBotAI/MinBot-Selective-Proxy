@@ -15,9 +15,9 @@
 - 系统 PAC：认证保存因 App 而异，优先改用 Chrome 扩展或设备级客户端。
 
 若 `enable` 后日志出现 `initialize cache-file: open cache.db: read-only file system`，升级
-到 v1.3.9 后重新执行 `minbot-proxy enable`。该版本关闭磁盘 cache-file，并在停止旧服务
+到 v1.4.0 后重新执行 `minbot-proxy enable`。该版本关闭磁盘 cache-file，并在停止旧服务
 后删除遗留的 `cache.db`、WAL 和 SHM 文件；远程规则仍按 5 分钟周期在内存中更新。
-执行前先用 `minbot-proxy version` 确认实际安装的是 v1.3.9；`git pull` 本身不会更新
+执行前先用 `minbot-proxy version` 确认实际安装的是 v1.4.0；`git pull` 本身不会更新
 Homebrew bin 中的命令。新版会在 bootstrap 前恢复 launchd 启用状态并清空历史日志。
 
 ## 域名仍无法访问
@@ -54,6 +54,13 @@ v1.1.0。该版本使用 TLS 加密客户端到代理的 CONNECT 请求，并拒
 服务。该版本将两个桌面进程的所有 TCP 连接交给代理，不再局限于 443，也不依赖域名
 allowlist 或 TLS SNI；大陆飞书域名和 Apple App Attest 端点仍优先直连。协议识别仅
 用于 TCP/443，且最长为 300ms，非标准端口不再承担全局 1 秒嗅探开销。
+
+若日志对 Dropbox、X 等公网 IP 持续显示 `502 Bad Gateway`，并且单次失败耗时数秒，
+升级客户端与生产代理到 v1.4.0。旧客户端虽然能用域名决定分流，但可能把大陆 DNS
+缓存的单一真实 IP 放进 CONNECT；该 IP 从新加坡不可达时就会反复等待。v1.4.0 对所有
+A/AAAA 查询使用内存 FakeIP 保留域名（不改变 allowlist 分流），并由服务端从公网
+IP:443 的 TLS SNI 恢复域名、重新并行尝试公网地址。升级后重新启用后台服务，并重启
+Chrome、Dropbox、Codex 等长驻 App 以清除旧连接。
 
 若同一时期出现 `ccm-frontier-hl.feishu.cn:443` 等飞书大陆域名通过
 `outbound/http[minbot-egress]`，说明客户端仍是旧版。v1.3.5 会让 `feishu.cn` 与

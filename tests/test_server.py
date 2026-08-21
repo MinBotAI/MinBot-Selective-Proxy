@@ -22,6 +22,8 @@ from minbot_selective_proxy.server import (
     _authorized,
     _load_additional_users,
     _open_public_connection,
+    _parse_tls_client_hello_sni,
+    _read_tls_client_hello_sni,
     _resolve_public_addresses,
     build_pac,
     domain_is_allowed,
@@ -37,6 +39,55 @@ def _config() -> ProxyConfig:
         password="correct horse battery staple",
         domains=("example.com", "youtube.com"),
     )
+
+
+def _tls_client_hello(server_name: str) -> bytes:
+    encoded_name = server_name.encode("ascii")
+    server_name_entry = b"\x00" + len(encoded_name).to_bytes(2, "big") + encoded_name
+    server_name_list = len(server_name_entry).to_bytes(2, "big") + server_name_entry
+    server_name_extension = (
+        b"\x00\x00" + len(server_name_list).to_bytes(2, "big") + server_name_list
+    )
+    body = (
+        b"\x03\x03"
+        + bytes(32)
+        + b"\x00"
+        + b"\x00\x02\x13\x01"
+        + b"\x01\x00"
+        + len(server_name_extension).to_bytes(2, "big")
+        + server_name_extension
+    )
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
+
+
+def test_tls_client_hello_parser_extracts_normalized_sni() -> None:
+    record = _tls_client_hello("WWW.Dropbox.COM")
+
+    assert _parse_tls_client_hello_sni(record[5:]) == "www.dropbox.com"
+
+
+@pytest.mark.asyncio
+async def test_tls_client_hello_reader_accepts_fragmented_records() -> None:
+    record = _tls_client_hello("x.com")
+    handshake = record[5:]
+    split_at = 19
+    fragmented = (
+        b"\x16\x03\x01"
+        + split_at.to_bytes(2, "big")
+        + handshake[:split_at]
+        + b"\x16\x03\x01"
+        + (len(handshake) - split_at).to_bytes(2, "big")
+        + handshake[split_at:]
+    )
+    reader = asyncio.StreamReader()
+    reader.feed_data(fragmented)
+    reader.feed_eof()
+
+    server_name, buffered = await _read_tls_client_hello_sni(reader, timeout=0.1)
+
+    assert server_name == "x.com"
+    assert buffered == fragmented
 
 
 def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> None:
@@ -73,7 +124,6 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
         },
         {
             "query_type": ["A", "AAAA"],
-            "rule_set": "minbot-domains",
             "action": "route",
             "server": "minbot-fakeip",
         }
@@ -204,7 +254,7 @@ def test_macos_installer_reports_its_version() -> None:
         text=True,
     )
 
-    assert result.stdout.strip() == "minbot-proxy 1.3.9"
+    assert result.stdout.strip() == "minbot-proxy 1.4.0"
 
 
 def test_tls_certificate_and_key_must_be_configured_together(monkeypatch) -> None:
@@ -533,6 +583,65 @@ async def test_authenticated_ip_connect_allows_any_port(monkeypatch) -> None:
 
     assert response.startswith(b"HTTP/1.1 502 Bad Gateway")
     assert attempted == [("157.240.7.20", 80)]
+
+
+@pytest.mark.asyncio
+async def test_ip_tls_connect_recovers_nonallowlisted_sni_and_forwards_hello(
+    monkeypatch,
+) -> None:
+    config = _config()
+    hello = _tls_client_hello("www.dropbox.com")
+    received_hello: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+
+    async def handle_upstream(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        received_hello.set_result(await reader.readexactly(len(hello)))
+        writer.write(b"upstream-ok")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_upstream, "127.0.0.1", 0)
+    upstream_port = upstream.sockets[0].getsockname()[1]
+    attempted: list[tuple[str, int]] = []
+
+    async def open_recovered_domain(host, port, _config):
+        attempted.append((host, port))
+        return await asyncio.open_connection("127.0.0.1", upstream_port)
+
+    monkeypatch.setattr(server_module, "_open_public_connection", open_recovered_domain)
+    proxy = SelectiveProxyServer(config)
+    listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
+    proxy_port = listener.sockets[0].getsockname()[1]
+    encoded = base64.b64encode(
+        f"{config.username}:{config.password}".encode()
+    ).decode()
+    reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+    writer.write(
+        (
+            "CONNECT 108.160.163.108:443 HTTP/1.1\r\n"
+            "Host: 108.160.163.108:443\r\n"
+            f"Proxy-Authorization: Basic {encoded}\r\n\r\n"
+        ).encode()
+    )
+    await writer.drain()
+    response_head = await reader.readuntil(b"\r\n\r\n")
+    writer.write(hello)
+    await writer.drain()
+    response_body = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    listener.close()
+    await listener.wait_closed()
+    upstream.close()
+    await upstream.wait_closed()
+
+    assert response_head.startswith(b"HTTP/1.1 200 Connection Established")
+    assert response_body == b"upstream-ok"
+    assert await received_hello == hello
+    assert attempted == [("www.dropbox.com", 443)]
 
 
 @pytest.mark.asyncio

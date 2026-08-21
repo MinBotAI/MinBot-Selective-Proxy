@@ -4,7 +4,7 @@
 set -euo pipefail
 
 readonly SCRIPT_REPOSITORY="${MINBOT_PROXY_GIT_URL:-https://github.com/MinBotAI/MinBot-Selective-Proxy.git}"
-readonly VERSION="1.3.9"
+readonly VERSION="1.4.0"
 readonly KEYCHAIN_SERVICE="ai.minbot.selective-proxy"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/minbot-selective-proxy"
 readonly USERNAME_FILE="${CONFIG_DIR}/username"
@@ -132,7 +132,6 @@ emit_sing_box_config() {
       },
       {
         "query_type": ["A", "AAAA"],
-        "rule_set": "minbot-domains",
         "action": "route",
         "server": "minbot-fakeip"
       }
