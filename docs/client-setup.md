@@ -16,7 +16,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.4/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.5/install-macos.sh \
   | bash
 ```
 
@@ -53,11 +53,10 @@ TCP 回退；其他 TCP 与非 DNS UDP 保持直连，远程 allowlist 每 5 分
 所有 UDP/443 会快速拒绝以强制 App 和浏览器回退到 TCP，包含仍持有旧真实 IP 缓存的
 进程；这避免未带域名元数据的 QUIC 流量误走直连并等待超时。
 
-Codex 与 ChatGPT 桌面进程的 TCP/443 会始终交给加密代理，再由服务端使用 TLS SNI
-allowlist 做最终校验。这能覆盖 App 在代理启动前缓存真实 IP 的情况，同时不扩大服务端
-允许访问的域名范围。`feishu.cn` 和 `feishucdn.com` 会在这条进程规则之前保持大陆直连，
-避免桌面 App 的飞书连接被代理服务拒绝并反复重试。远程规则还包含少量已确认的受限
-服务 IP 恢复段。
+Codex 与 ChatGPT 桌面进程的所有 TCP 连接会始终交给加密代理，包括 App 在代理启动前
+缓存的真实 IP 和非标准端口。服务端验证账号后允许任意公网目标，不再做域名、SNI 或
+端口 allowlist 校验；私网、回环、链路本地和保留地址仍被拒绝。`feishu.cn` 和
+`feishucdn.com` 会在这条进程规则之前保持大陆直连，避免不必要的跨境绕行。
 
 ## Chrome
 

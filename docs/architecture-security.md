@@ -2,18 +2,16 @@
 
 ## 请求路径
 
-1. PAC、Chrome、Karing 或 sing-box 判断目标域名是否在 allowlist。
-2. 命中的 TCP 请求通过带 Basic Proxy Authentication 的 HTTP 正向代理发送。
-3. 服务端再次校验账号、目标域名、端口和 DNS 解析结果。若 sing-box 保留了 CDN 的
-   实际 IP 作为 `IP:443` CONNECT 目标，服务端只在读取到 allowlist 内的 TLS SNI
-   后，按该 SNI 域名重新解析并连接上游。
-4. 非 allowlist 域名，以及私网、回环、链路本地、保留或非全局 IP 均被拒绝。
-   allowlist 域名默认可使用任意有效 TCP 端口，以兼容 TUN CONNECT 和服务自定义端口；
-   IP CONNECT 仍仅限 443，并要求 TLS SNI 命中 allowlist。
+1. PAC、Chrome、Karing 或 sing-box 使用 allowlist 决定哪些常见境外服务需要代理；
+   Codex/ChatGPT 桌面进程的所有 TCP 连接直接进入代理。大陆飞书域名优先直连。
+2. 代理请求必须通过 Basic Proxy Authentication，并通过固定公钥的 TLS 入口传输。
+3. 认证成功后，服务端允许任意公网域名、公网 IP 和有效 TCP 端口，不再校验域名
+   allowlist、TLS SNI 或端口表。
+4. DNS 结果中的私网、回环、链路本地、保留和其他非全局地址仍被过滤；IP 字面量也
+   使用同一规则。这一 SSRF 边界不影响公网访问速度。
 
-客户端规则只决定分流体验，不能扩大服务端权限。即使客户端规则被修改，服务端仍
-只允许当前 allowlist。IP CONNECT 仅限公网地址和 TCP 443，必须携带合法且命中
-allowlist 的 TLS ClientHello；私网 IP、无 SNI、非 TLS 或非 allowlist SNI 都会断开。
+allowlist 现在是客户端分流和 PAC 管理机制，不是服务端授权边界。代理账号一旦泄露，
+持有者可以消耗出口流量并访问任意公网服务，因此账号必须使用独立高熵密码并及时轮换。
 
 ## 公开与受保护入口
 
@@ -64,7 +62,8 @@ macOS TUN 客户端连接独立 TLS 代理入口，并用仓库内发布的 SHA-
 - `PROXY_CONNECT_TIMEOUT_SECONDS`，默认 `10`
 - `PROXY_IDLE_TIMEOUT_SECONDS`，默认 `120`
 - `PROXY_TUNNEL_MAX_SECONDS`，默认 `1800`
-- `PROXY_ALLOWED_CONNECT_PORTS`，默认 `*`，允许 allowlist 域名使用任意 TCP 端口；
-  可配置逗号分隔端口重新收紧，且不会放宽 IP CONNECT 的 443 限制
+
+认证用户的公网目标和 TCP 端口不设额外限制。以上连接数与超时参数仍用于防止单个
+失效目标长期占用服务资源，不属于目标访问控制。
 
 本服务面向少量受信用户，不应作为公开匿名代理。

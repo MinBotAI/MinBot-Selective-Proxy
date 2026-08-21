@@ -1,8 +1,8 @@
-"""Authenticated domain-scoped forward proxy with PAC and allowlist management.
+"""Authenticated public-network proxy with selective client routing.
 
-The service intentionally supports only destinations from ``PROXY_DOMAINS``.
-The PAC file is a client convenience, not the security boundary; the server
-repeats the allowlist and public-IP checks for every connection.
+The allowlist controls PAC and client routing. After authentication, the
+server permits every public destination and TCP port while continuing to
+reject private, loopback, link-local, reserved, and metadata IPs.
 """
 
 from __future__ import annotations
@@ -332,16 +332,11 @@ DEFAULT_PROXY_DOMAINS = tuple(
         }
     )
 )
-# An empty tuple means that allowlisted domain targets may use any TCP port.
-# IP-literal CONNECT remains separately restricted to TLS port 443.
-DEFAULT_CONNECT_PORTS: tuple[int, ...] = ()
 DEFAULT_PROXY_IP_CIDRS = (
     "157.240.0.0/16",
 )
 
 _HEADER_LIMIT = 65_536
-_TLS_CLIENT_HELLO_LIMIT = 65_536
-_TLS_RECORD_LIMIT = 18_432
 _ADMIN_BODY_LIMIT = 16_384
 _PROXY_HOST_PATTERN = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
 _ALLOWED_HTTP_METHODS = frozenset(
@@ -374,7 +369,6 @@ class ProxyConfig:
     connect_timeout_seconds: float = 10.0
     idle_timeout_seconds: float = 120.0
     tunnel_max_seconds: float = 1_800.0
-    allowed_connect_ports: tuple[int, ...] = DEFAULT_CONNECT_PORTS
 
 
 def load_config() -> ProxyConfig:
@@ -404,9 +398,6 @@ def load_config() -> ProxyConfig:
         ),
         tunnel_max_seconds=max(
             60.0, float(os.getenv("PROXY_TUNNEL_MAX_SECONDS", "1800"))
-        ),
-        allowed_connect_ports=_load_allowed_connect_ports(
-            os.getenv("PROXY_ALLOWED_CONNECT_PORTS", "")
         ),
     )
 
@@ -457,18 +448,6 @@ def _load_additional_users(raw_value: str) -> tuple[tuple[str, str], ...]:
             raise RuntimeError("proxy usernames and passwords cannot be empty")
         users.append((additional_username, raw_password))
     return tuple(users)
-
-
-def _load_allowed_connect_ports(raw_value: str) -> tuple[int, ...]:
-    if not raw_value.strip() or raw_value.strip() == "*":
-        return DEFAULT_CONNECT_PORTS
-    try:
-        ports = {int(value.strip()) for value in raw_value.split(",")}
-    except ValueError as exc:
-        raise RuntimeError("PROXY_ALLOWED_CONNECT_PORTS must contain integers") from exc
-    if not ports or any(port < 1 or port > 65_535 for port in ports):
-        raise RuntimeError("PROXY_ALLOWED_CONNECT_PORTS contains an invalid port")
-    return tuple(sorted(ports))
 
 
 def normalize_domains(values: object) -> tuple[str, ...]:
@@ -866,24 +845,10 @@ class SelectiveProxyServer:
         client_reader: asyncio.StreamReader,
     ) -> None:
         host, port = _split_authority(target, default_port=443)
-        if _is_ip_literal(host):
-            await self._handle_tls_ip_connect(
-                host,
-                port,
-                client_writer,
-                client_reader,
-            )
-            return
-        if (
-            self.config.allowed_connect_ports
-            and port not in self.config.allowed_connect_ports
-        ):
-            raise PermissionError("destination port is not allowed")
         upstream_reader, upstream_writer = await _open_public_connection(
             host,
             port,
             self.config,
-            self.allowlist.domains,
         )
         client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         await client_writer.drain()
@@ -901,69 +866,6 @@ class SelectiveProxyServer:
             upstream_writer.close()
             with contextlib.suppress(Exception):
                 await upstream_writer.wait_closed()
-
-    async def _handle_tls_ip_connect(
-        self,
-        host: str,
-        port: int,
-        client_writer: asyncio.StreamWriter,
-        client_reader: asyncio.StreamReader,
-    ) -> None:
-        """Safely recover an allowlisted TLS hostname from an IP CONNECT.
-
-        sing-box can select this proxy using a sniffed or FakeIP-backed domain
-        while retaining the origin server's real IP as the CONNECT authority.
-        The proxy must acknowledge CONNECT before the client sends its TLS
-        ClientHello, so policy failures after this point are enforced by
-        closing the tunnel instead of returning another HTTP response.
-        """
-        if port != 443:
-            raise PermissionError("IP destinations are only supported for TLS port 443")
-        _require_public_ip(host)
-
-        client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        await client_writer.drain()
-
-        upstream_writer: asyncio.StreamWriter | None = None
-        try:
-            server_name, client_hello = await _read_tls_client_hello_sni(
-                client_reader,
-                timeout=self.config.connect_timeout_seconds,
-            )
-            if not domain_is_allowed(server_name, self.allowlist.domains):
-                raise PermissionError("TLS server name is outside the proxy allowlist")
-
-            upstream_reader, upstream_writer = await _open_public_connection(
-                server_name,
-                port,
-                self.config,
-                self.allowlist.domains,
-            )
-            upstream_writer.write(client_hello)
-            await upstream_writer.drain()
-            with contextlib.suppress(TimeoutError, ConnectionError, OSError):
-                async with asyncio.timeout(self.config.tunnel_max_seconds):
-                    await _relay_bidirectionally(
-                        client_reader,
-                        client_writer,
-                        upstream_reader,
-                        upstream_writer,
-                        idle_timeout=self.config.idle_timeout_seconds,
-                    )
-        except (
-            asyncio.IncompleteReadError,
-            ConnectionError,
-            OSError,
-            PermissionError,
-            TimeoutError,
-            ValueError,
-        ) as exc:
-            _LOGGER.info("rejected TLS IP CONNECT: %s", exc)
-        finally:
-            if upstream_writer is not None:
-                upstream_writer.close()
-                with contextlib.suppress(Exception):
-                    await upstream_writer.wait_closed()
 
     async def _handle_http(
         self,
@@ -985,15 +887,12 @@ class SelectiveProxyServer:
             raise PermissionError("only absolute HTTP URLs are allowed")
         if parsed.username or parsed.password or parsed.fragment:
             raise PermissionError("URL credentials are not allowed")
-        if port != 80:
-            raise PermissionError("only HTTP port 80 is allowed")
         if headers.get("transfer-encoding"):
             raise PermissionError("chunked HTTP requests are not supported")
         upstream_reader, upstream_writer = await _open_public_connection(
             parsed.hostname,
             port,
             self.config,
-            self.allowlist.domains,
         )
         origin_target = parsed.path or "/"
         if parsed.query:
@@ -1119,139 +1018,13 @@ def _split_authority(authority: str, *, default_port: int) -> tuple[str, int]:
     return parsed.hostname, port
 
 
-def _require_public_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
-    try:
-        address = ipaddress.ip_address(host.strip("[]"))
-    except ValueError as exc:
-        raise PermissionError("destination is not an IP address") from exc
-    if not address.is_global:
-        raise PermissionError("IP destination is not public")
-    return address
-
-
-async def _read_tls_client_hello_sni(
-    reader: asyncio.StreamReader,
-    *,
-    timeout: float,
-) -> tuple[str, bytes]:
-    """Read a bounded TLS ClientHello and return its normalized SNI and bytes."""
-    records = bytearray()
-    handshake = bytearray()
-    expected_handshake_size: int | None = None
-
-    async with asyncio.timeout(timeout):
-        while expected_handshake_size is None or len(handshake) < expected_handshake_size:
-            header = await reader.readexactly(5)
-            if header[0] != 22:
-                raise PermissionError("TLS ClientHello is required")
-            record_size = int.from_bytes(header[3:5], "big")
-            if record_size <= 0 or record_size > _TLS_RECORD_LIMIT:
-                raise ValueError("invalid TLS record size")
-            if len(records) + 5 + record_size > _TLS_CLIENT_HELLO_LIMIT:
-                raise ValueError("TLS ClientHello is too large")
-            payload = await reader.readexactly(record_size)
-            records.extend(header)
-            records.extend(payload)
-            handshake.extend(payload)
-
-            if expected_handshake_size is None and len(handshake) >= 4:
-                if handshake[0] != 1:
-                    raise PermissionError("TLS ClientHello is required")
-                expected_handshake_size = 4 + int.from_bytes(handshake[1:4], "big")
-                if expected_handshake_size > _TLS_CLIENT_HELLO_LIMIT:
-                    raise ValueError("TLS ClientHello is too large")
-
-    if expected_handshake_size is None:
-        raise ValueError("incomplete TLS ClientHello")
-    server_name = _parse_tls_client_hello_sni(bytes(handshake[:expected_handshake_size]))
-    return server_name, bytes(records)
-
-
-def _parse_tls_client_hello_sni(handshake: bytes) -> str:
-    if len(handshake) < 4 or handshake[0] != 1:
-        raise PermissionError("TLS ClientHello is required")
-    body_size = int.from_bytes(handshake[1:4], "big")
-    if body_size != len(handshake) - 4:
-        raise ValueError("invalid TLS ClientHello size")
-    body = memoryview(handshake)[4:]
-    cursor = 34  # legacy_version (2) and random (32)
-    if len(body) < cursor + 1:
-        raise ValueError("truncated TLS ClientHello")
-
-    session_id_size = body[cursor]
-    cursor += 1 + session_id_size
-    if len(body) < cursor + 2:
-        raise ValueError("truncated TLS cipher suites")
-    cipher_suites_size = int.from_bytes(body[cursor : cursor + 2], "big")
-    if cipher_suites_size < 2 or cipher_suites_size % 2:
-        raise ValueError("invalid TLS cipher suites")
-    cursor += 2 + cipher_suites_size
-    if len(body) < cursor + 1:
-        raise ValueError("truncated TLS compression methods")
-    compression_size = body[cursor]
-    cursor += 1 + compression_size
-    if len(body) < cursor + 2:
-        raise PermissionError("TLS SNI is required")
-
-    extensions_size = int.from_bytes(body[cursor : cursor + 2], "big")
-    cursor += 2
-    extensions_end = cursor + extensions_size
-    if extensions_end != len(body):
-        raise ValueError("invalid TLS extensions size")
-
-    while cursor < extensions_end:
-        if cursor + 4 > extensions_end:
-            raise ValueError("truncated TLS extension")
-        extension_type = int.from_bytes(body[cursor : cursor + 2], "big")
-        extension_size = int.from_bytes(body[cursor + 2 : cursor + 4], "big")
-        cursor += 4
-        extension_end = cursor + extension_size
-        if extension_end > extensions_end:
-            raise ValueError("truncated TLS extension data")
-        if extension_type == 0:
-            return _parse_tls_sni_extension(bytes(body[cursor:extension_end]))
-        cursor = extension_end
-    raise PermissionError("TLS SNI is required")
-
-
-def _parse_tls_sni_extension(extension: bytes) -> str:
-    if len(extension) < 2:
-        raise ValueError("truncated TLS SNI extension")
-    names_size = int.from_bytes(extension[:2], "big")
-    if names_size != len(extension) - 2:
-        raise ValueError("invalid TLS SNI extension size")
-    cursor = 2
-    while cursor < len(extension):
-        if cursor + 3 > len(extension):
-            raise ValueError("truncated TLS server name")
-        name_type = extension[cursor]
-        name_size = int.from_bytes(extension[cursor + 1 : cursor + 3], "big")
-        cursor += 3
-        name_end = cursor + name_size
-        if name_end > len(extension):
-            raise ValueError("truncated TLS server name value")
-        if name_type == 0:
-            try:
-                raw_name = extension[cursor:name_end].decode("ascii")
-            except UnicodeDecodeError as exc:
-                raise PermissionError("TLS server name must be ASCII") from exc
-            normalized = normalize_domains([raw_name])
-            if len(normalized) != 1 or _is_ip_literal(normalized[0]):
-                raise PermissionError("invalid TLS server name")
-            return normalized[0]
-        cursor = name_end
-    raise PermissionError("TLS SNI hostname is required")
-
-
 async def _open_public_connection(
     host: str,
     port: int,
     config: ProxyConfig,
-    domains: tuple[str, ...] | None = None,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    if not domain_is_allowed(host, domains if domains is not None else config.domains):
-        raise PermissionError("destination is outside the proxy allowlist")
     addresses = await _resolve_public_addresses(host, port)
+
     async def connect(
         row: tuple[int, int, int, str, tuple[object, ...]],
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:

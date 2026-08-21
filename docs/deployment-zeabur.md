@@ -43,7 +43,7 @@ macOS 脚本、Karing 模板、Chrome 默认值和客户端文档。
 3. 分别暴露容器 `8080` 和 `8443` 为 Public TCP。
 4. 等待部署状态为 `RUNNING`。
 5. 检查构建日志、运行日志和健康接口。
-6. 用未认证、已认证、非 allowlist 三类请求完成验收。
+6. 用未认证、已认证公网域名、已认证公网 IP 和私网 IP 四类请求完成验收。
 
 ## 验收
 
@@ -57,15 +57,20 @@ curl --fail "${PROXY_ENDPOINT}/domains.sing-box.json"
 # 应返回 407
 curl --proxy "${PROXY_ENDPOINT}" https://www.google.com/ -I
 
-# curl 会提示密码；allowlist 目标应可连接
+# curl 会提示密码；任意公网目标应可连接
 curl --proxy "${PROXY_ENDPOINT}" \
   --proxy-user '<assigned-username>' \
   https://www.google.com/ -I
 
-# 已认证但不在 allowlist 的目标应返回 403
+# 已认证且不在客户端 allowlist 的公网目标也应可连接
 curl --proxy "${PROXY_ENDPOINT}" \
   --proxy-user '<assigned-username>' \
   https://example.com/ -I
+
+# 私网、回环、链路本地和保留目标必须返回 403
+curl --proxy "${PROXY_ENDPOINT}" \
+  --proxy-user '<assigned-username>' \
+  https://127.0.0.1/ -I
 ```
 
 ## 回滚

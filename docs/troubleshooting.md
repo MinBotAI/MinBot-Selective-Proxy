@@ -22,10 +22,10 @@
    根域名。
 4. sing-box 和 Karing 最长可能等待 5 分钟刷新远程规则。
 
-若日志显示 `outbound/http[minbot-egress]` 连接到 IP 地址并返回 `403 Forbidden`，说明
-本地仍在使用 v1.0.0 的 TUN 配置。先停止当前进程，运行 `minbot-proxy update`，再重新
-执行 `minbot-proxy check` 和 `minbot-proxy run`；v1.1.0 会通过 FakeIP DNS 让 HTTP
-代理收到 allowlist 域名，而不是 CDN 的解析后 IP。
+v1.3.5 起，认证成功后服务端允许任意公网域名、公网 IP 和 TCP 端口。公网目标仍返回
+`403 Forbidden` 说明客户端或服务端尚未升级：停止旧进程，执行 `minbot-proxy update`
+和 `minbot-proxy enable`，并确认生产代理已部署 v1.3.5。私网、回环、链路本地、保留
+和其他非全局地址仍会返回 403，这是保留的 SSRF 防护。
 
 若看到 `read: connection reset by peer`，先确认服务端 `PROXY_MAX_CONNECTIONS` 不低于
 `128`。v1.0.2 会在容量耗尽时返回明确的 `503 Service Unavailable`，并并行尝试已经
@@ -44,29 +44,13 @@ v1.1.0。该版本使用 TLS 加密客户端到代理的 CONNECT 请求，并拒
 成功响应，避免浏览器在 DNS 阶段失败、等待超时或使用 HTTPS 记录中的真实 IP 绕过
 域名代理。
 
-若 `mtalk.google.com:5228` 返回 `403 Forbidden`，升级到 v1.2.2。服务端默认允许
-Google/Firebase 使用的 TCP 5228–5230；客户端同时全局拒绝 UDP/443，让持有旧 IP
-缓存的 App 也能快速从 QUIC 回退到 TCP。
-
-若日志中的目标是 `104.16.x.x:443`、`162.125.x.x:443` 等 Cloudflare、Dropbox 或
-其他 CDN 实际 IP，并由 `outbound/http[minbot-egress]` 收到 `403 Forbidden`，升级到
-v1.3.0。服务端会在认证后的 IP CONNECT 中读取 TLS ClientHello，只在 SNI 命中
-allowlist 时按域名连接上游；无需放开任意公网 IP，也不应把 CDN IP 写入 allowlist。
-
-若 `clients2.google.com:80`、`edgedl.me.gvt1.com:80` 等 allowlist 域名返回 403，
-升级到 v1.3.3。sing-box 的 HTTP 出站会对 TUN TCP 使用 CONNECT；服务端允许已经通过
-域名 allowlist 和公网 DNS 校验的目标使用任意 TCP 端口，避免服务改用新端口时再次
-出现同类 403。IP 目标仍只允许带 allowlist TLS SNI 的 443。
-
-若 Codex/ChatGPT 能加载但连接远程任务很慢，或日志显示 allowlist 服务的真实 IP 仍走
-`outbound/direct[direct]`，升级客户端到 v1.3.3 并重启。该版本对 Codex/ChatGPT
-进程的 TCP/443 增加代理恢复规则，并在远程规则中覆盖已确认的 Meta IP 段；服务端仍
-要求 TLS SNI 命中域名 allowlist。
+若 Codex/ChatGPT 能加载但连接远程任务很慢，升级客户端到 v1.3.5 并重新启用后台
+服务。该版本将两个桌面进程的所有 TCP 连接交给代理，不再局限于 443，也不依赖域名
+allowlist 或 TLS SNI；大陆飞书域名仍优先直连。
 
 若同一时期出现 `ccm-frontier-hl.feishu.cn:443` 等飞书大陆域名通过
-`outbound/http[minbot-egress]` 返回 403，说明进程恢复规则捕获了不需要代理的连接。
-v1.3.3 会让 `feishu.cn` 与 `feishucdn.com` 在进程规则之前直连，避免失败重试拖慢
-桌面 App；不要把这些大陆域名加入服务端代理 allowlist。
+`outbound/http[minbot-egress]`，说明客户端仍是旧版。v1.3.5 会让 `feishu.cn` 与
+`feishucdn.com` 在进程规则之前直连，避免失败重试和不必要的跨境绕行。
 
 若日志显示 `dial udp 223.5.5.5:53: i/o timeout`，升级客户端到 v1.3.4 并重新启用
 后台服务。该版本将普通域名解析改为阿里公共 DNS 的 DoH/443，避免 UDP/53 丢包阻塞；

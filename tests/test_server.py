@@ -13,7 +13,6 @@ import pytest
 import minbot_selective_proxy.server as server_module
 
 from minbot_selective_proxy.server import (
-    DEFAULT_CONNECT_PORTS,
     DEFAULT_PROXY_DOMAIN_GROUPS,
     DEFAULT_PROXY_DOMAINS,
     DEFAULT_PROXY_IP_CIDRS,
@@ -22,10 +21,7 @@ from minbot_selective_proxy.server import (
     _admin_authorized,
     _authorized,
     _load_additional_users,
-    _load_allowed_connect_ports,
     _open_public_connection,
-    _parse_tls_client_hello_sni,
-    _read_tls_client_hello_sni,
     _resolve_public_addresses,
     build_pac,
     domain_is_allowed,
@@ -41,26 +37,6 @@ def _config() -> ProxyConfig:
         password="correct horse battery staple",
         domains=("example.com", "youtube.com"),
     )
-
-
-def _tls_client_hello(server_name: str) -> bytes:
-    encoded_name = server_name.encode("ascii")
-    server_name_entry = b"\x00" + len(encoded_name).to_bytes(2, "big") + encoded_name
-    server_name_list = len(server_name_entry).to_bytes(2, "big") + server_name_entry
-    server_name_extension = (
-        b"\x00\x00" + len(server_name_list).to_bytes(2, "big") + server_name_list
-    )
-    body = (
-        b"\x03\x03"
-        + bytes(32)
-        + b"\x00"
-        + b"\x00\x02\x13\x01"
-        + b"\x01\x00"
-        + len(server_name_extension).to_bytes(2, "big")
-        + server_name_extension
-    )
-    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
-    return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
 
 
 def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> None:
@@ -129,7 +105,6 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
     codex_proxy_index = route_rules.index(
         {
             "network": "tcp",
-            "port": 443,
             "process_path_regex": ["/(ChatGPT|Codex)\\.app/Contents/"],
             "action": "route",
             "outbound": "minbot-egress",
@@ -336,18 +311,6 @@ def test_additional_proxy_users_load_from_secret_json() -> None:
         _load_additional_users("[]")
 
 
-def test_connect_ports_default_to_unrestricted_allowlisted_domains() -> None:
-    assert DEFAULT_CONNECT_PORTS == ()
-    assert _load_allowed_connect_ports("") == ()
-    assert _load_allowed_connect_ports("*") == ()
-    assert _load_allowed_connect_ports("8443,443") == (443, 8443)
-
-    with pytest.raises(RuntimeError, match="invalid port"):
-        _load_allowed_connect_ports("0,443")
-    with pytest.raises(RuntimeError, match="integers"):
-        _load_allowed_connect_ports("443,not-a-port")
-
-
 @pytest.mark.asyncio
 async def test_direct_pac_endpoint_is_public_but_proxy_requests_require_auth() -> None:
     proxy = SelectiveProxyServer(_config())
@@ -382,8 +345,19 @@ async def test_direct_pac_endpoint_is_public_but_proxy_requests_require_auth() -
 
 
 @pytest.mark.asyncio
-async def test_authenticated_proxy_still_rejects_nonallowlisted_destination() -> None:
+async def test_authenticated_proxy_allows_nonallowlisted_public_destination(
+    monkeypatch,
+) -> None:
     config = _config()
+    attempted: list[tuple[str, int]] = []
+
+    async def fail_after_policy_validation(host, port, _config):
+        attempted.append((host, port))
+        raise OSError("upstream dial intentionally stopped")
+
+    monkeypatch.setattr(
+        server_module, "_open_public_connection", fail_after_policy_validation
+    )
     proxy = SelectiveProxyServer(config)
     listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
     port = listener.sockets[0].getsockname()[1]
@@ -405,139 +379,8 @@ async def test_authenticated_proxy_still_rejects_nonallowlisted_destination() ->
     listener.close()
     await listener.wait_closed()
 
-    assert response.startswith(b"HTTP/1.1 403 Forbidden")
-    assert b"outside the proxy allowlist" in response
-
-
-def test_tls_client_hello_parser_extracts_normalized_sni() -> None:
-    record = _tls_client_hello("WWW.YouTube.COM")
-    assert _parse_tls_client_hello_sni(record[5:]) == "www.youtube.com"
-
-
-@pytest.mark.asyncio
-async def test_tls_client_hello_reader_accepts_fragmented_handshake_records() -> None:
-    record = _tls_client_hello("www.youtube.com")
-    handshake = record[5:]
-    split_at = 11
-    fragmented = (
-        b"\x16\x03\x01"
-        + split_at.to_bytes(2, "big")
-        + handshake[:split_at]
-        + b"\x16\x03\x01"
-        + (len(handshake) - split_at).to_bytes(2, "big")
-        + handshake[split_at:]
-    )
-    reader = asyncio.StreamReader()
-    reader.feed_data(fragmented)
-    reader.feed_eof()
-
-    server_name, buffered = await _read_tls_client_hello_sni(reader, timeout=0.5)
-
-    assert server_name == "www.youtube.com"
-    assert buffered == fragmented
-
-
-@pytest.mark.asyncio
-async def test_ip_connect_routes_by_allowlisted_tls_sni(monkeypatch) -> None:
-    config = _config()
-    hello = _tls_client_hello("www.youtube.com")
-    upstream_received = asyncio.Event()
-
-    async def handle_upstream(
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        assert await reader.readexactly(len(hello)) == hello
-        upstream_received.set()
-        writer.write(b"upstream-ok")
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-
-    upstream_listener = await asyncio.start_server(handle_upstream, "127.0.0.1", 0)
-    upstream_port = upstream_listener.sockets[0].getsockname()[1]
-
-    async def fake_open_public_connection(host, port, *_args, **_kwargs):
-        assert host == "www.youtube.com"
-        assert port == 443
-        return await asyncio.open_connection("127.0.0.1", upstream_port)
-
-    monkeypatch.setattr(
-        server_module, "_open_public_connection", fake_open_public_connection
-    )
-    proxy = SelectiveProxyServer(config)
-    listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
-    proxy_port = listener.sockets[0].getsockname()[1]
-    encoded = base64.b64encode(
-        f"{config.username}:{config.password}".encode()
-    ).decode()
-    reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
-    writer.write(
-        (
-            "CONNECT 104.16.79.73:443 HTTP/1.1\r\n"
-            "Host: 104.16.79.73:443\r\n"
-            f"Proxy-Authorization: Basic {encoded}\r\n\r\n"
-        ).encode()
-    )
-    await writer.drain()
-
-    response = await reader.readuntil(b"\r\n\r\n")
-    writer.write(hello)
-    await writer.drain()
-    upstream_response = await reader.readexactly(len(b"upstream-ok"))
-
-    await asyncio.wait_for(upstream_received.wait(), timeout=0.5)
-    writer.close()
-    await writer.wait_closed()
-    listener.close()
-    await listener.wait_closed()
-    upstream_listener.close()
-    await upstream_listener.wait_closed()
-
-    assert response.startswith(b"HTTP/1.1 200 Connection Established")
-    assert upstream_response == b"upstream-ok"
-
-
-@pytest.mark.asyncio
-async def test_ip_connect_closes_tunnel_for_nonallowlisted_tls_sni(monkeypatch) -> None:
-    config = _config()
-    connector_called = False
-
-    async def forbidden_connector(*_args, **_kwargs):
-        nonlocal connector_called
-        connector_called = True
-        raise AssertionError("upstream connector must not be called")
-
-    monkeypatch.setattr(server_module, "_open_public_connection", forbidden_connector)
-    proxy = SelectiveProxyServer(config)
-    listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
-    proxy_port = listener.sockets[0].getsockname()[1]
-    encoded = base64.b64encode(
-        f"{config.username}:{config.password}".encode()
-    ).decode()
-    reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
-    writer.write(
-        (
-            "CONNECT 162.125.32.12:443 HTTP/1.1\r\n"
-            "Host: 162.125.32.12:443\r\n"
-            f"Proxy-Authorization: Basic {encoded}\r\n\r\n"
-        ).encode()
-    )
-    await writer.drain()
-
-    response = await reader.readuntil(b"\r\n\r\n")
-    writer.write(_tls_client_hello("not-allowed.example"))
-    await writer.drain()
-    tunnel_tail = await asyncio.wait_for(reader.read(), timeout=0.5)
-
-    writer.close()
-    await writer.wait_closed()
-    listener.close()
-    await listener.wait_closed()
-
-    assert response.startswith(b"HTTP/1.1 200 Connection Established")
-    assert tunnel_tail == b""
-    assert connector_called is False
+    assert response.startswith(b"HTTP/1.1 502 Bad Gateway")
+    assert attempted == [("example.org", 443)]
 
 
 @pytest.mark.asyncio
@@ -566,12 +409,21 @@ async def test_ip_connect_rejects_private_addresses_before_opening_tunnel() -> N
     await listener.wait_closed()
 
     assert response.startswith(b"HTTP/1.1 403 Forbidden")
-    assert b"IP destination is not public" in response
+    assert b"destination did not resolve to a public address" in response
 
 
 @pytest.mark.asyncio
-async def test_ip_connect_rejects_non_tls_port_before_opening_tunnel() -> None:
+async def test_authenticated_ip_connect_allows_any_port(monkeypatch) -> None:
     config = _config()
+    attempted: list[tuple[str, int]] = []
+
+    async def fail_after_policy_validation(host, port, _config):
+        attempted.append((host, port))
+        raise OSError("upstream dial intentionally stopped")
+
+    monkeypatch.setattr(
+        server_module, "_open_public_connection", fail_after_policy_validation
+    )
     proxy = SelectiveProxyServer(config)
     listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
     proxy_port = listener.sockets[0].getsockname()[1]
@@ -594,18 +446,18 @@ async def test_ip_connect_rejects_non_tls_port_before_opening_tunnel() -> None:
     listener.close()
     await listener.wait_closed()
 
-    assert response.startswith(b"HTTP/1.1 403 Forbidden")
-    assert b"only supported for TLS port 443" in response
+    assert response.startswith(b"HTTP/1.1 502 Bad Gateway")
+    assert attempted == [("157.240.7.20", 80)]
 
 
 @pytest.mark.asyncio
-async def test_allowlisted_domains_accept_all_connect_ports(
+async def test_authenticated_domains_accept_all_connect_ports(
     monkeypatch,
 ) -> None:
     config = ProxyConfig(
         username="proxy",
         password="secret",
-        domains=("google.com",),
+        domains=("example.com",),
     )
 
     async def fail_after_policy_validation(*args, **kwargs):
@@ -635,7 +487,7 @@ async def test_allowlisted_domains_accept_all_connect_ports(
         return response
 
     try:
-        http_allowed = await request("clients2.google.com", 80)
+        http_allowed = await request("not-allowlisted.invalid", 80)
         push_allowed = await request("mtalk.google.com", 5228)
         custom_allowed = await request("mtalk.google.com", 8443)
     finally:
@@ -645,38 +497,6 @@ async def test_allowlisted_domains_accept_all_connect_ports(
     assert http_allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
     assert push_allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
     assert custom_allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
-
-
-@pytest.mark.asyncio
-async def test_explicit_connect_port_list_can_restrict_allowlisted_domains() -> None:
-    config = ProxyConfig(
-        username="proxy",
-        password="secret",
-        domains=("google.com",),
-        allowed_connect_ports=(443,),
-    )
-    proxy = SelectiveProxyServer(config)
-    listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
-    port = listener.sockets[0].getsockname()[1]
-    encoded = base64.b64encode(b"proxy:secret").decode()
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    writer.write(
-        (
-            "CONNECT clients2.google.com:80 HTTP/1.1\r\n"
-            "Host: clients2.google.com:80\r\n"
-            f"Proxy-Authorization: Basic {encoded}\r\n\r\n"
-        ).encode()
-    )
-    await writer.drain()
-
-    response = await reader.read()
-    writer.close()
-    await writer.wait_closed()
-    listener.close()
-    await listener.wait_closed()
-
-    assert response.startswith(b"HTTP/1.1 403 Forbidden")
-    assert b"destination port is not allowed" in response
 
 
 @pytest.mark.asyncio
