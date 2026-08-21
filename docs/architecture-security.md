@@ -7,9 +7,9 @@
 3. 服务端再次校验账号、目标域名、端口和 DNS 解析结果。若 sing-box 保留了 CDN 的
    实际 IP 作为 `IP:443` CONNECT 目标，服务端只在读取到 allowlist 内的 TLS SNI
    后，按该 SNI 域名重新解析并连接上游。
-4. 非 allowlist 域名、非授权 CONNECT 端口，以及私网、回环、链路本地、保留或
-   非全局 IP 均被拒绝。默认 CONNECT 端口为 `80,443,5228,5229,5230`；80 用于
-   TUN HTTP 出站，后三个用于 Google/Firebase 推送。
+4. 非 allowlist 域名，以及私网、回环、链路本地、保留或非全局 IP 均被拒绝。
+   allowlist 域名默认可使用任意有效 TCP 端口，以兼容 TUN CONNECT 和服务自定义端口；
+   IP CONNECT 仍仅限 443，并要求 TLS SNI 命中 allowlist。
 
 客户端规则只决定分流体验，不能扩大服务端权限。即使客户端规则被修改，服务端仍
 只允许当前 allowlist。IP CONNECT 仅限公网地址和 TCP 443，必须携带合法且命中
@@ -64,6 +64,7 @@ macOS TUN 客户端连接独立 TLS 代理入口，并用仓库内发布的 SHA-
 - `PROXY_CONNECT_TIMEOUT_SECONDS`，默认 `10`
 - `PROXY_IDLE_TIMEOUT_SECONDS`，默认 `120`
 - `PROXY_TUNNEL_MAX_SECONDS`，默认 `1800`
-- `PROXY_ALLOWED_CONNECT_PORTS`，默认 `80,443,5228,5229,5230`
+- `PROXY_ALLOWED_CONNECT_PORTS`，默认 `*`，允许 allowlist 域名使用任意 TCP 端口；
+  可配置逗号分隔端口重新收紧，且不会放宽 IP CONNECT 的 443 限制
 
 本服务面向少量受信用户，不应作为公开匿名代理。

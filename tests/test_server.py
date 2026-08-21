@@ -289,12 +289,11 @@ def test_additional_proxy_users_load_from_secret_json() -> None:
         _load_additional_users("[]")
 
 
-def test_connect_ports_include_http_and_google_push_ports() -> None:
-    assert DEFAULT_CONNECT_PORTS == (80, 443, 5228, 5229, 5230)
-    assert (
-        _load_allowed_connect_ports("5230,80,443,5228,5229")
-        == DEFAULT_CONNECT_PORTS
-    )
+def test_connect_ports_default_to_unrestricted_allowlisted_domains() -> None:
+    assert DEFAULT_CONNECT_PORTS == ()
+    assert _load_allowed_connect_ports("") == ()
+    assert _load_allowed_connect_ports("*") == ()
+    assert _load_allowed_connect_ports("8443,443") == (443, 8443)
 
     with pytest.raises(RuntimeError, match="invalid port"):
         _load_allowed_connect_ports("0,443")
@@ -553,7 +552,7 @@ async def test_ip_connect_rejects_non_tls_port_before_opening_tunnel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_and_google_push_connect_ports_pass_policy_validation(
+async def test_allowlisted_domains_accept_all_connect_ports(
     monkeypatch,
 ) -> None:
     config = ProxyConfig(
@@ -591,15 +590,46 @@ async def test_http_and_google_push_connect_ports_pass_policy_validation(
     try:
         http_allowed = await request("clients2.google.com", 80)
         push_allowed = await request("mtalk.google.com", 5228)
-        denied = await request("mtalk.google.com", 5227)
+        custom_allowed = await request("mtalk.google.com", 8443)
     finally:
         listener.close()
         await listener.wait_closed()
 
     assert http_allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
     assert push_allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
-    assert denied.startswith(b"HTTP/1.1 403 Forbidden")
-    assert b"destination port is not allowed" in denied
+    assert custom_allowed.startswith(b"HTTP/1.1 502 Bad Gateway")
+
+
+@pytest.mark.asyncio
+async def test_explicit_connect_port_list_can_restrict_allowlisted_domains() -> None:
+    config = ProxyConfig(
+        username="proxy",
+        password="secret",
+        domains=("google.com",),
+        allowed_connect_ports=(443,),
+    )
+    proxy = SelectiveProxyServer(config)
+    listener = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
+    port = listener.sockets[0].getsockname()[1]
+    encoded = base64.b64encode(b"proxy:secret").decode()
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(
+        (
+            "CONNECT clients2.google.com:80 HTTP/1.1\r\n"
+            "Host: clients2.google.com:80\r\n"
+            f"Proxy-Authorization: Basic {encoded}\r\n\r\n"
+        ).encode()
+    )
+    await writer.drain()
+
+    response = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    listener.close()
+    await listener.wait_closed()
+
+    assert response.startswith(b"HTTP/1.1 403 Forbidden")
+    assert b"destination port is not allowed" in response
 
 
 @pytest.mark.asyncio

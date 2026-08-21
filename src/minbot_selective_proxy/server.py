@@ -332,7 +332,9 @@ DEFAULT_PROXY_DOMAINS = tuple(
         }
     )
 )
-DEFAULT_CONNECT_PORTS = (80, 443, 5228, 5229, 5230)
+# An empty tuple means that allowlisted domain targets may use any TCP port.
+# IP-literal CONNECT remains separately restricted to TLS port 443.
+DEFAULT_CONNECT_PORTS: tuple[int, ...] = ()
 DEFAULT_PROXY_IP_CIDRS = (
     "157.240.0.0/16",
 )
@@ -458,7 +460,7 @@ def _load_additional_users(raw_value: str) -> tuple[tuple[str, str], ...]:
 
 
 def _load_allowed_connect_ports(raw_value: str) -> tuple[int, ...]:
-    if not raw_value.strip():
+    if not raw_value.strip() or raw_value.strip() == "*":
         return DEFAULT_CONNECT_PORTS
     try:
         ports = {int(value.strip()) for value in raw_value.split(",")}
@@ -864,8 +866,6 @@ class SelectiveProxyServer:
         client_reader: asyncio.StreamReader,
     ) -> None:
         host, port = _split_authority(target, default_port=443)
-        if port not in self.config.allowed_connect_ports:
-            raise PermissionError("destination port is not allowed")
         if _is_ip_literal(host):
             await self._handle_tls_ip_connect(
                 host,
@@ -874,6 +874,11 @@ class SelectiveProxyServer:
                 client_reader,
             )
             return
+        if (
+            self.config.allowed_connect_ports
+            and port not in self.config.allowed_connect_ports
+        ):
+            raise PermissionError("destination port is not allowed")
         upstream_reader, upstream_writer = await _open_public_connection(
             host,
             port,

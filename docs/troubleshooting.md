@@ -54,11 +54,12 @@ v1.3.0。服务端会在认证后的 IP CONNECT 中读取 TLS ClientHello，只�
 allowlist 时按域名连接上游；无需放开任意公网 IP，也不应把 CDN IP 写入 allowlist。
 
 若 `clients2.google.com:80`、`edgedl.me.gvt1.com:80` 等 allowlist 域名返回 403，
-升级到 v1.3.1。sing-box 的 HTTP 出站会对 TUN TCP 使用 CONNECT，服务端因此需要允许
-经域名 allowlist 校验后的 CONNECT 80；IP 目标的 80 端口仍会被拒绝。
+升级到 v1.3.2。sing-box 的 HTTP 出站会对 TUN TCP 使用 CONNECT；服务端允许已经通过
+域名 allowlist 和公网 DNS 校验的目标使用任意 TCP 端口，避免服务改用新端口时再次
+出现同类 403。IP 目标仍只允许带 allowlist TLS SNI 的 443。
 
 若 Codex/ChatGPT 能加载但连接远程任务很慢，或日志显示 allowlist 服务的真实 IP 仍走
-`outbound/direct[direct]`，升级客户端到 v1.3.1 并重启。该版本对 Codex/ChatGPT
+`outbound/direct[direct]`，升级客户端到 v1.3.2 并重启。该版本对 Codex/ChatGPT
 进程的 TCP/443 增加代理恢复规则，并在远程规则中覆盖已确认的 Meta IP 段；服务端仍
 要求 TLS SNI 命中域名 allowlist。
 
