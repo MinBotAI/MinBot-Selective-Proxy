@@ -16,7 +16,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.5/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.6/install-macos.sh \
   | bash
 ```
 
@@ -56,7 +56,11 @@ TCP 回退；其他 TCP 与非 DNS UDP 保持直连，远程 allowlist 每 5 分
 Codex 与 ChatGPT 桌面进程的所有 TCP 连接会始终交给加密代理，包括 App 在代理启动前
 缓存的真实 IP 和非标准端口。服务端验证账号后允许任意公网目标，不再做域名、SNI 或
 端口 allowlist 校验；私网、回环、链路本地和保留地址仍被拒绝。`feishu.cn` 和
-`feishucdn.com` 会在这条进程规则之前保持大陆直连，避免不必要的跨境绕行。
+`feishucdn.com` 以及精确的 Apple App Attest 端点会在这条进程规则之前保持大陆直连，
+避免不必要的跨境绕行。
+
+客户端只对 TCP/443 执行 TLS 域名识别，最长等待 300ms，用于在 Codex/ChatGPT 进程
+规则前识别飞书直连流量。非 443 的 Codex 远程连接不再经过协议嗅探，直接进入代理。
 
 ## Chrome
 

@@ -160,8 +160,11 @@ emit_sing_box_config() {
     "default_domain_resolver": "alidns-doh",
     "rules": [
       {
+        "network": "tcp",
+        "port": 443,
         "action": "sniff",
-        "timeout": "1s"
+        "sniffer": ["tls"],
+        "timeout": "300ms"
       },
       {
         "protocol": "dns",
@@ -185,6 +188,12 @@ emit_sing_box_config() {
       {
         "network": "tcp",
         "domain_suffix": ["feishu.cn", "feishucdn.com"],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "network": "tcp",
+        "domain": ["register.appattest.apple.com"],
         "action": "route",
         "outbound": "direct"
       },

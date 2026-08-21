@@ -3,7 +3,8 @@
 ## 请求路径
 
 1. PAC、Chrome、Karing 或 sing-box 使用 allowlist 决定哪些常见境外服务需要代理；
-   Codex/ChatGPT 桌面进程的所有 TCP 连接直接进入代理。大陆飞书域名优先直连。
+   Codex/ChatGPT 桌面进程的 TCP 连接直接进入代理，大陆飞书域名和精确的 Apple App
+   Attest 端点优先直连。
 2. 代理请求必须通过 Basic Proxy Authentication，并通过固定公钥的 TLS 入口传输。
 3. 认证成功后，服务端允许任意公网域名、公网 IP 和有效 TCP 端口，不再校验域名
    allowlist、TLS SNI 或端口表。

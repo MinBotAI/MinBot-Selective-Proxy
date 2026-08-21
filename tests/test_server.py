@@ -83,6 +83,15 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
 
     assert config["route"]["default_domain_resolver"] == "alidns-doh"
     route_rules = config["route"]["rules"]
+    tls_sniff_index = route_rules.index(
+        {
+            "network": "tcp",
+            "port": 443,
+            "action": "sniff",
+            "sniffer": ["tls"],
+            "timeout": "300ms",
+        }
+    )
     dns_hijack_index = route_rules.index(
         {"protocol": "dns", "action": "hijack-dns"}
     )
@@ -118,9 +127,18 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
             "outbound": "direct",
         }
     )
-    assert dns_hijack_index < global_quic_reject_index
+    app_attest_direct_index = route_rules.index(
+        {
+            "network": "tcp",
+            "domain": ["register.appattest.apple.com"],
+            "action": "route",
+            "outbound": "direct",
+        }
+    )
+    assert tls_sniff_index < dns_hijack_index < global_quic_reject_index
     assert global_quic_reject_index < allowlist_udp_reject_index < udp_direct_index
-    assert udp_direct_index < mainland_direct_index < codex_proxy_index
+    assert udp_direct_index < mainland_direct_index < app_attest_direct_index
+    assert app_attest_direct_index < codex_proxy_index
     assert codex_proxy_index < allowlist_proxy_index
 
     outbound = next(
@@ -221,12 +239,12 @@ def test_domain_allowlist_covers_subdomains_but_rejects_lookalikes_and_ips() -> 
     assert not domain_is_allowed("127.0.0.1", domains)
 
 
-def test_default_allowlist_covers_heygen_app_api_and_first_party_assets() -> None:
+def test_default_allowlist_covers_blocked_heygen_app_and_api() -> None:
     assert domain_is_allowed("www.heygen.com", DEFAULT_PROXY_DOMAINS)
     assert domain_is_allowed("app.heygen.com", DEFAULT_PROXY_DOMAINS)
     assert domain_is_allowed("api.heygen.com", DEFAULT_PROXY_DOMAINS)
-    assert domain_is_allowed("static.heygen.ai", DEFAULT_PROXY_DOMAINS)
-    assert domain_is_allowed("files2.heygen.ai", DEFAULT_PROXY_DOMAINS)
+    assert not domain_is_allowed("static.heygen.ai", DEFAULT_PROXY_DOMAINS)
+    assert not domain_is_allowed("files2.heygen.ai", DEFAULT_PROXY_DOMAINS)
     assert not domain_is_allowed("heygen.com.example.org", DEFAULT_PROXY_DOMAINS)
 
 
@@ -256,8 +274,51 @@ def test_default_allowlist_is_normalized_unique_and_broad() -> None:
         for domain in domains
     )
 
-    assert len(DEFAULT_PROXY_DOMAINS) >= 275
+    assert len(DEFAULT_PROXY_DOMAINS) == 249
     assert DEFAULT_PROXY_DOMAINS == normalize_domains(grouped_domains)
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "amplitude.com",
+        "anthropicusercontent.com",
+        "bloomberg.net",
+        "box.com",
+        "boxcdn.net",
+        "braze.com",
+        "characterai.io",
+        "contentfulassets.com",
+        "ct.sendgrid.net",
+        "datadoghq.com",
+        "figma.net",
+        "heygen.ai",
+        "hubspot.com",
+        "hubspotusercontent.com",
+        "huggingfaceusercontent.com",
+        "launchdarkly.com",
+        "midjourneycdn.com",
+        "onesignal.com",
+        "openaimerge.com",
+        "optimizely.com",
+        "pusher.com",
+        "railway.app",
+        "register.appattest.apple.com",
+        "render.com",
+        "replicate.com",
+        "replicate.delivery",
+        "segment.com",
+        "segment.io",
+        "sendgrid.net",
+        "statsig.com",
+        "statsigapi.net",
+        "workos.com",
+        "workoscdn.com",
+        "zeabur.app",
+    ],
+)
+def test_default_allowlist_excludes_direct_or_unverified_domains(domain: str) -> None:
+    assert not domain_is_allowed(domain, DEFAULT_PROXY_DOMAINS)
 
 
 def test_pac_defaults_to_direct_and_routes_only_allowlisted_domains() -> None:

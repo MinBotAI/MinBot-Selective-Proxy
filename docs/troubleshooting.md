@@ -44,9 +44,10 @@ v1.1.0。该版本使用 TLS 加密客户端到代理的 CONNECT 请求，并拒
 成功响应，避免浏览器在 DNS 阶段失败、等待超时或使用 HTTPS 记录中的真实 IP 绕过
 域名代理。
 
-若 Codex/ChatGPT 能加载但连接远程任务很慢，升级客户端到 v1.3.5 并重新启用后台
+若 Codex/ChatGPT 能加载但连接远程任务很慢，升级客户端到 v1.3.6 并重新启用后台
 服务。该版本将两个桌面进程的所有 TCP 连接交给代理，不再局限于 443，也不依赖域名
-allowlist 或 TLS SNI；大陆飞书域名仍优先直连。
+allowlist 或 TLS SNI；大陆飞书域名和 Apple App Attest 端点仍优先直连。协议识别仅
+用于 TCP/443，且最长为 300ms，非标准端口不再承担全局 1 秒嗅探开销。
 
 若同一时期出现 `ccm-frontier-hl.feishu.cn:443` 等飞书大陆域名通过
 `outbound/http[minbot-egress]`，说明客户端仍是旧版。v1.3.5 会让 `feishu.cn` 与
