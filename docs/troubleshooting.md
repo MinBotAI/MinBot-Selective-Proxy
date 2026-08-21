@@ -14,6 +14,10 @@
 - macOS CLI：运行 `minbot-proxy configure` 更新 Keychain。
 - 系统 PAC：认证保存因 App 而异，优先改用 Chrome 扩展或设备级客户端。
 
+若 `enable` 后日志出现 `initialize cache-file: open cache.db: read-only file system`，升级
+到 v1.3.7 后重新执行 `minbot-proxy enable`。该版本把缓存固定到 root 可写的专用目录，
+并设置 `launchd` 工作目录，不再尝试写入系统只读启动目录。
+
 ## 域名仍无法访问
 
 1. 在 Chrome 扩展或 `GET /api/domains` 中确认根域名存在。

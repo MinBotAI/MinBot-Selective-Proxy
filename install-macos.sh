@@ -74,6 +74,8 @@ emit_launchd_plist() {
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>WorkingDirectory</key>
+  <string>${DAEMON_DIR}</string>
   <key>StandardOutPath</key>
   <string>${DAEMON_LOG}</string>
   <key>StandardErrorPath</key>
@@ -222,7 +224,8 @@ emit_sing_box_config() {
   },
   "experimental": {
     "cache_file": {
-      "enabled": true
+      "enabled": true,
+      "path": "/Library/Application Support/MinBot Selective Proxy/cache.db"
     }
   }
 }
@@ -360,6 +363,7 @@ check_config() {
 run_proxy() {
   render_private_config
   trap cleanup_runtime_config EXIT INT TERM
+  sudo install -d -m 0700 "${DAEMON_DIR}"
   sudo sing-box check -c "${RUNTIME_CONFIG}"
   echo "MinBot selective proxy is running. Press Ctrl-C to stop."
   sudo sing-box run -c "${RUNTIME_CONFIG}"
