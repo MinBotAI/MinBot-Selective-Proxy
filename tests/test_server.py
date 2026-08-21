@@ -181,12 +181,30 @@ def test_macos_installer_supports_launchd_background_service() -> None:
         "-c",
         "/Library/Application Support/MinBot Selective Proxy/config.json",
     ]
-    assert 'sudo launchctl bootstrap system "${DAEMON_PLIST}"' in installer
-    assert 'sudo launchctl enable "system/${LAUNCHD_LABEL}"' in installer
+    bootstrap_index = installer.index(
+        'sudo launchctl bootstrap system "${DAEMON_PLIST}"'
+    )
+    enable_index = installer.index(
+        'sudo launchctl enable "system/${LAUNCHD_LABEL}"'
+    )
+    assert enable_index < bootstrap_index
     assert 'sudo launchctl kickstart -k "system/${LAUNCHD_LABEL}"' in installer
     assert 'sudo install -d -m 0700 "${DAEMON_DIR}"' in installer
     assert '"${DAEMON_DIR}/cache.db-wal"' in installer
+    assert 'sudo install -m 0600 -o root -g wheel /dev/null "${DAEMON_LOG}"' in installer
     assert 'sudo install -m 0600 -o root -g wheel' in installer
+
+
+def test_macos_installer_reports_its_version() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        ["bash", str(repository / "install-macos.sh"), "version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "minbot-proxy 1.3.9"
 
 
 def test_tls_certificate_and_key_must_be_configured_together(monkeypatch) -> None:

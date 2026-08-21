@@ -15,8 +15,10 @@
 - 系统 PAC：认证保存因 App 而异，优先改用 Chrome 扩展或设备级客户端。
 
 若 `enable` 后日志出现 `initialize cache-file: open cache.db: read-only file system`，升级
-到 v1.3.8 后重新执行 `minbot-proxy enable`。该版本关闭磁盘 cache-file，并在停止旧服务
+到 v1.3.9 后重新执行 `minbot-proxy enable`。该版本关闭磁盘 cache-file，并在停止旧服务
 后删除遗留的 `cache.db`、WAL 和 SHM 文件；远程规则仍按 5 分钟周期在内存中更新。
+执行前先用 `minbot-proxy version` 确认实际安装的是 v1.3.9；`git pull` 本身不会更新
+Homebrew bin 中的命令。新版会在 bootstrap 前恢复 launchd 启用状态并清空历史日志。
 
 ## 域名仍无法访问
 

@@ -16,7 +16,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.8/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.9/install-macos.sh \
   | bash
 ```
 
@@ -32,6 +32,7 @@ minbot-proxy run        # 仅调试时前台运行；Ctrl-C 停止
 minbot-proxy check      # 检查配置
 minbot-proxy configure  # 更换账号
 minbot-proxy update     # 从本仓库 main 更新 CLI
+minbot-proxy version    # 核对实际执行的已安装版本
 ```
 
 `enable` 使用系统级 `launchd`，因为 TUN 网络接口需要 root 权限。命令会请求一次
@@ -40,6 +41,10 @@ minbot-proxy update     # 从本仓库 main 更新 CLI
 可读。客户端禁用磁盘 cache-file，远程规则与 DNS 只在内存中缓存，不会产生持续增长的
 `cache.db`；升级时会清理旧版本留下的缓存数据库。更新脚本或修改代理账号后，需要再次
 执行 `minbot-proxy enable` 刷新配置。
+
+在仓库中执行 `git pull` 只更新工作区，不会替换 Homebrew bin 中的已安装命令。仓库更新
+后可执行 `bash ./install-macos.sh _install-cli-current` 安装当前脚本，或直接运行
+`minbot-proxy update` 从远端更新。
 
 默认日志级别为 `warn`，不会再输出每条连接的 INFO 记录。
 

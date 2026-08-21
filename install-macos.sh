@@ -4,6 +4,7 @@
 set -euo pipefail
 
 readonly SCRIPT_REPOSITORY="${MINBOT_PROXY_GIT_URL:-https://github.com/MinBotAI/MinBot-Selective-Proxy.git}"
+readonly VERSION="1.3.9"
 readonly KEYCHAIN_SERVICE="ai.minbot.selective-proxy"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/minbot-selective-proxy"
 readonly USERNAME_FILE="${CONFIG_DIR}/username"
@@ -28,6 +29,7 @@ Usage:
   minbot-proxy status      Show the background service status
   minbot-proxy logs        Show recent important background logs
   minbot-proxy update      Download the latest script from GitHub
+  minbot-proxy version     Show the installed CLI version
 EOF
 }
 
@@ -385,8 +387,9 @@ enable_daemon() {
     "${DAEMON_DIR}/cache.db" \
     "${DAEMON_DIR}/cache.db-shm" \
     "${DAEMON_DIR}/cache.db-wal"
-  sudo launchctl bootstrap system "${DAEMON_PLIST}"
+  sudo install -m 0600 -o root -g wheel /dev/null "${DAEMON_LOG}"
   sudo launchctl enable "system/${LAUNCHD_LABEL}"
+  sudo launchctl bootstrap system "${DAEMON_PLIST}"
   sudo launchctl kickstart -k "system/${LAUNCHD_LABEL}"
   echo "MinBot selective proxy is enabled and running in the background."
   echo "Check it with: ${INSTALL_NAME} status"
@@ -466,6 +469,9 @@ case "${1:-install}" in
   update)
     require_macos
     install_cli update
+    ;;
+  version)
+    echo "${INSTALL_NAME} ${VERSION}"
     ;;
   _install-cli-current)
     install_cli install
