@@ -155,10 +155,7 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
     assert config["route"]["rule_set"][0]["url"] == (
         "http://43.156.119.18:31456/domains.sing-box.json"
     )
-    assert config["experimental"]["cache_file"] == {
-        "enabled": True,
-        "path": "/Library/Application Support/MinBot Selective Proxy/cache.db",
-    }
+    assert "experimental" not in config
 
 
 def test_macos_installer_supports_launchd_background_service() -> None:
@@ -188,6 +185,7 @@ def test_macos_installer_supports_launchd_background_service() -> None:
     assert 'sudo launchctl enable "system/${LAUNCHD_LABEL}"' in installer
     assert 'sudo launchctl kickstart -k "system/${LAUNCHD_LABEL}"' in installer
     assert 'sudo install -d -m 0700 "${DAEMON_DIR}"' in installer
+    assert '"${DAEMON_DIR}/cache.db-wal"' in installer
     assert 'sudo install -m 0600 -o root -g wheel' in installer
 
 

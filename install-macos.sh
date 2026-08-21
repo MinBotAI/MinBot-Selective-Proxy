@@ -221,12 +221,6 @@ emit_sing_box_config() {
         "update_interval": "5m"
       }
     ]
-  },
-  "experimental": {
-    "cache_file": {
-      "enabled": true,
-      "path": "/Library/Application Support/MinBot Selective Proxy/cache.db"
-    }
   }
 }
 JSON
@@ -387,6 +381,10 @@ enable_daemon() {
   if sudo launchctl print "system/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
     sudo launchctl bootout "system/${LAUNCHD_LABEL}"
   fi
+  sudo rm -f -- \
+    "${DAEMON_DIR}/cache.db" \
+    "${DAEMON_DIR}/cache.db-shm" \
+    "${DAEMON_DIR}/cache.db-wal"
   sudo launchctl bootstrap system "${DAEMON_PLIST}"
   sudo launchctl enable "system/${LAUNCHD_LABEL}"
   sudo launchctl kickstart -k "system/${LAUNCHD_LABEL}"

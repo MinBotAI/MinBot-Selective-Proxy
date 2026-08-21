@@ -16,7 +16,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.7/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.3.8/install-macos.sh \
   | bash
 ```
 
@@ -37,8 +37,9 @@ minbot-proxy update     # 从本仓库 main 更新 CLI
 `enable` 使用系统级 `launchd`，因为 TUN 网络接口需要 root 权限。命令会请求一次
 管理员密码，将生成后的配置保存到
 `/Library/Application Support/MinBot Selective Proxy/config.json`，并限制为仅 root
-可读。规则缓存固定保存在同一受保护目录的 `cache.db`，不会依赖 `launchd` 的默认工作
-目录。更新脚本或修改代理账号后，需要再次执行 `minbot-proxy enable` 刷新配置。
+可读。客户端禁用磁盘 cache-file，远程规则与 DNS 只在内存中缓存，不会产生持续增长的
+`cache.db`；升级时会清理旧版本留下的缓存数据库。更新脚本或修改代理账号后，需要再次
+执行 `minbot-proxy enable` 刷新配置。
 
 默认日志级别为 `warn`，不会再输出每条连接的 INFO 记录。
 

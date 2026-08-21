@@ -15,8 +15,8 @@
 - 系统 PAC：认证保存因 App 而异，优先改用 Chrome 扩展或设备级客户端。
 
 若 `enable` 后日志出现 `initialize cache-file: open cache.db: read-only file system`，升级
-到 v1.3.7 后重新执行 `minbot-proxy enable`。该版本把缓存固定到 root 可写的专用目录，
-并设置 `launchd` 工作目录，不再尝试写入系统只读启动目录。
+到 v1.3.8 后重新执行 `minbot-proxy enable`。该版本关闭磁盘 cache-file，并在停止旧服务
+后删除遗留的 `cache.db`、WAL 和 SHM 文件；远程规则仍按 5 分钟周期在内存中更新。
 
 ## 域名仍无法访问
 
