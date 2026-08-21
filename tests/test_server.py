@@ -126,9 +126,18 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
             "outbound": "minbot-egress",
         }
     )
+    mainland_direct_index = route_rules.index(
+        {
+            "network": "tcp",
+            "domain_suffix": ["feishu.cn", "feishucdn.com"],
+            "action": "route",
+            "outbound": "direct",
+        }
+    )
     assert dns_hijack_index < global_quic_reject_index
     assert global_quic_reject_index < allowlist_udp_reject_index < udp_direct_index
-    assert udp_direct_index < codex_proxy_index < allowlist_proxy_index
+    assert udp_direct_index < mainland_direct_index < codex_proxy_index
+    assert codex_proxy_index < allowlist_proxy_index
 
     outbound = next(
         item for item in config["outbounds"] if item["tag"] == "minbot-egress"

@@ -177,6 +177,12 @@ emit_sing_box_config() {
       },
       {
         "network": "tcp",
+        "domain_suffix": ["feishu.cn", "feishucdn.com"],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "network": "tcp",
         "port": 443,
         "process_path_regex": ["/(ChatGPT|Codex)\\.app/Contents/"],
         "action": "route",
