@@ -205,7 +205,9 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
     assert config["route"]["rule_set"][0]["url"] == (
         "http://43.156.119.18:31456/domains.sing-box.json"
     )
-    assert "experimental" not in config
+    assert "cache_file" not in config["experimental"]
+    assert config["experimental"]["clash_api"]["external_controller"] == "127.0.0.1:19090"
+    assert config["experimental"]["clash_api"]["secret"]
 
 
 def test_macos_installer_supports_launchd_background_service() -> None:

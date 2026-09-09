@@ -38,7 +38,7 @@ minbot-proxy enable
 管理员密码；生成的私密配置仅保存为 root 可读（权限 `600`），不会写入仓库。
 
 ```bash
-minbot-proxy status    # 查看运行状态
+minbot-proxy status    # 实时状态面板，每 2 秒刷新，q 退出
 minbot-proxy logs      # 最近 100 行重要日志
 minbot-proxy disable   # 停止并禁用自动启动
 minbot-proxy run       # 需要调试时在前台运行
