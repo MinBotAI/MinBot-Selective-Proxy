@@ -29,6 +29,7 @@ minbot-proxy status     # 每 2 秒刷新状态面板，按 q 或 Ctrl-C 退出
 minbot-proxy status --once  # 输出一次可读状态
 minbot-proxy status --raw   # 原始 launchd 诊断信息
 minbot-proxy logs       # 最近 100 行告警和错误
+minbot-proxy add-domain example.com  # 使用已登录账号动态增加根域名
 minbot-proxy disable    # 停止并禁用自动启动
 minbot-proxy run        # 仅调试时前台运行；Ctrl-C 停止
 minbot-proxy check      # 检查配置
@@ -36,6 +37,10 @@ minbot-proxy configure  # 更换账号
 minbot-proxy update     # 从本仓库 main 更新 CLI
 minbot-proxy version    # 核对实际执行的已安装版本
 ```
+
+`add-domain` 只接受根域名，不要包含协议、端口、路径或通配符。命令复用本地用户名文件与
+macOS Keychain 密码，通过校验固定公钥的 TLS 管理入口提交修改；密码不会写入 shell
+history。成功后客户端通常会在 5 分钟内刷新远程规则，不需要重启本机代理。
 
 `enable` 使用系统级 `launchd`，因为 TUN 网络接口需要 root 权限。命令会请求一次
 管理员密码，将生成后的配置保存到

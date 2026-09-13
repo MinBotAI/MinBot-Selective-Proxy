@@ -40,12 +40,15 @@ minbot-proxy enable
 ```bash
 minbot-proxy status    # 实时状态面板，每 2 秒刷新，q 退出
 minbot-proxy logs      # 最近 100 行重要日志
+minbot-proxy add-domain example.com  # 使用已登录账号动态增加根域名
 minbot-proxy disable   # 停止并禁用自动启动
 minbot-proxy run       # 需要调试时在前台运行
 ```
 
-客户端日志默认使用 `warn` 级别，仅保留告警和错误，避免输出每条连接记录。更新脚本或
-修改账号后，再执行一次 `minbot-proxy enable`，即可刷新后台配置并重启服务。
+客户端日志默认使用 `warn` 级别，仅保留告警和错误，避免输出每条连接记录。动态新增域名
+会复用本机已保存的用户名和 Keychain 密码，远程规则通常会在 5 分钟内刷新，不需要重启
+本机代理。更新脚本或修改账号后，再执行一次 `minbot-proxy enable`，即可刷新后台配置并
+重启服务。
 
 ### Chrome
 

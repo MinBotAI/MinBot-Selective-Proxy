@@ -6,6 +6,9 @@ set -euo pipefail
 readonly SCRIPT_REPOSITORY="${MINBOT_PROXY_GIT_URL:-https://github.com/MinBotAI/MinBot-Selective-Proxy.git}"
 readonly VERSION="1.4.0"
 readonly KEYCHAIN_SERVICE="ai.minbot.selective-proxy"
+readonly MANAGEMENT_API_URL="https://minbot-egress.local:31528/api/domains"
+readonly MANAGEMENT_API_RESOLVE="minbot-egress.local:31528:43.156.119.18"
+readonly MANAGEMENT_API_PUBLIC_KEY="sha256//GVMj+hTQYmgLDC+XzCL7Sy3MTneSXdqHwUoEcQ9qrXs="
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/minbot-selective-proxy"
 readonly USERNAME_FILE="${CONFIG_DIR}/username"
 readonly INSTALL_NAME="minbot-proxy"
@@ -22,6 +25,7 @@ usage() {
 Usage:
   minbot-proxy install     Install or update the CLI, sing-box, and credentials
   minbot-proxy configure   Change the proxy username or Keychain password
+  minbot-proxy add-domain <domain>  Add a root domain using saved credentials
   minbot-proxy check       Validate the generated sing-box configuration
   minbot-proxy run         Run the all-app TUN proxy in the foreground
   minbot-proxy enable      Enable and start automatic background operation
@@ -357,6 +361,135 @@ render_private_config() {
   unset password
 }
 
+add_domain() {
+  require_macos
+  if [[ "$#" -ne 1 ]]; then
+    echo "Usage: minbot-proxy add-domain <domain>" >&2
+    return 2
+  fi
+  if [[ ! -s "${USERNAME_FILE}" ]]; then
+    echo "Credentials are not configured. Run: ${INSTALL_NAME} configure" >&2
+    return 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Adding a domain requires Python 3. Install with: brew install python" >&2
+    return 1
+  fi
+
+  python3 - \
+    "$1" \
+    "${USERNAME_FILE}" \
+    "${KEYCHAIN_SERVICE}" \
+    "${MANAGEMENT_API_URL}" \
+    "${MANAGEMENT_API_RESOLVE}" \
+    "${MANAGEMENT_API_PUBLIC_KEY}" <<'PY_ADD_DOMAIN'
+import json
+import re
+import shutil
+import subprocess
+import sys
+
+
+def fail(message, code=1):
+    print(message, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def curl_config_quote(value):
+    replacements = {
+        "\\": "\\\\",
+        '"': '\\"',
+        "\r": "\\r",
+        "\n": "\\n",
+        "\t": "\\t",
+    }
+    return "".join(replacements.get(character, character) for character in value)
+
+
+raw_domain, username_path, keychain_service, api_url, api_resolve, public_key = sys.argv[1:]
+domain = raw_domain.strip().casefold().rstrip(".").removeprefix("*.")
+try:
+    domain = domain.encode("idna").decode("ascii")
+except UnicodeError:
+    fail("Invalid domain. Enter a root domain such as example.com.", 2)
+labels = domain.split(".")
+label_pattern = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+if (
+    not domain
+    or len(domain) > 253
+    or any(not label_pattern.fullmatch(label) for label in labels)
+):
+    fail("Invalid domain. Enter a root domain such as example.com.", 2)
+
+try:
+    username = open(username_path, encoding="utf-8").read().strip()
+except OSError as exc:
+    fail(f"Unable to read the saved proxy username: {exc}")
+if not username:
+    fail("Credentials are not configured. Run: minbot-proxy configure")
+
+security = shutil.which("security")
+curl = shutil.which("curl")
+if security is None or curl is None:
+    fail("The macOS security and curl commands are required.")
+credentials = subprocess.run(
+    [security, "find-generic-password", "-a", username, "-s", keychain_service, "-w"],
+    capture_output=True,
+    text=True,
+)
+if credentials.returncode:
+    fail("Unable to read the proxy password from Keychain. Run: minbot-proxy configure")
+password = credentials.stdout.rstrip("\n")
+curl_config = f'user = "{curl_config_quote(username)}:{curl_config_quote(password)}"\n'
+request = subprocess.run(
+    [
+        curl,
+        "--disable",
+        "--config",
+        "-",
+        "--silent",
+        "--show-error",
+        "--fail-with-body",
+        "--proto",
+        "=https",
+        "--connect-timeout",
+        "10",
+        "--max-time",
+        "30",
+        "--noproxy",
+        "*",
+        "--resolve",
+        api_resolve,
+        "--insecure",
+        "--pinnedpubkey",
+        public_key,
+        "--header",
+        "Content-Type: application/json",
+        "--data",
+        json.dumps({"domain": domain}, separators=(",", ":")),
+        api_url,
+    ],
+    input=curl_config,
+    capture_output=True,
+    text=True,
+)
+password = ""
+curl_config = ""
+if request.returncode:
+    detail = request.stderr.strip() or request.stdout.strip() or "unknown error"
+    fail(f"Unable to update the proxy allowlist: {detail}")
+try:
+    response = json.loads(request.stdout)
+    domains = response["domains"]
+except (json.JSONDecodeError, KeyError, TypeError):
+    fail("The proxy returned an invalid allowlist response.")
+if not isinstance(domains, list) or domain not in domains:
+    fail("The proxy did not confirm the new domain.")
+print(f"Allowlist updated: {domain} ({len(domains)} domains)")
+print("Clients will refresh the remote rules within about 5 minutes.")
+PY_ADD_DOMAIN
+}
+
 check_config() {
   render_private_config
   trap cleanup_runtime_config EXIT INT TERM
@@ -676,6 +809,9 @@ case "${1:-install}" in
   configure)
     require_macos
     configure_credentials
+    ;;
+  add-domain)
+    add_domain "${@:2}"
     ;;
   check)
     check_config

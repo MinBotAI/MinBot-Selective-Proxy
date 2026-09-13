@@ -5,6 +5,16 @@
 优先使用 Chrome 扩展：登录后会显示当前完整域名列表，可新增或移除根域名。输入
 `example.com` 即可，不要输入 `https://`、端口、路径或通配符。
 
+已在 macOS CLI 登录时，也可以直接动态增加根域名：
+
+```bash
+minbot-proxy add-domain example.com
+```
+
+命令复用本地用户名文件和 Keychain 密码，通过固定公钥校验的 TLS 入口调用管理 API。
+密码不会写入 shell history；成功后 PAC、Karing 与 sing-box 使用同一份运行时状态，
+客户端通常会在 5 分钟内刷新规则。
+
 规则入口：
 
 - PAC：`/proxy.pac`
