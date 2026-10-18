@@ -62,9 +62,11 @@ macOS TUN 客户端连接独立 TLS 代理入口，并用仓库内发布的 SHA-
 
 - `PROXY_MAX_CONNECTIONS`，默认 `256`；整机 TUN 客户端会并发建立大量浏览器和 App
   隧道，生产环境不应低于 `128`
-- `PROXY_CONNECT_TIMEOUT_SECONDS`，默认 `10`
-- `PROXY_IDLE_TIMEOUT_SECONDS`，默认 `120`
-- `PROXY_TUNNEL_MAX_SECONDS`，默认 `1800`
+- `PROXY_CONNECT_TIMEOUT_SECONDS`，默认 `10`，包括 DNS 和 TCP 建连
+- `PROXY_IDLE_TIMEOUT_SECONDS`，默认 `120`，双向都没有数据活动才回收连接
+- `PROXY_TUNNEL_MAX_SECONDS`，默认 `0`，不强制中断活跃隧道；正数可设置总时长上限
+
+隧道结束或取消时会回收全部转发任务；连接关闭最多等待 5 秒，超时则释放底层 socket。
 
 认证用户的公网目标和 TCP 端口不设额外限制。以上连接数与超时参数仍用于防止单个
 失效目标长期占用服务资源，不属于目标访问控制。

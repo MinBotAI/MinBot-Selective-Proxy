@@ -19,6 +19,7 @@ import re
 import socket
 import ssl
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -306,6 +307,7 @@ _HEADER_LIMIT = 65_536
 _TLS_CLIENT_HELLO_LIMIT = 65_536
 _TLS_RECORD_LIMIT = 18_432
 _ADMIN_BODY_LIMIT = 16_384
+_STREAM_CLOSE_TIMEOUT = 5.0
 _PROXY_HOST_PATTERN = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
 _ALLOWED_HTTP_METHODS = frozenset(
     {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
@@ -336,7 +338,7 @@ class ProxyConfig:
     max_connections: int = 256
     connect_timeout_seconds: float = 10.0
     idle_timeout_seconds: float = 120.0
-    tunnel_max_seconds: float = 1_800.0
+    tunnel_max_seconds: float = 0.0
 
 
 def load_config() -> ProxyConfig:
@@ -365,7 +367,7 @@ def load_config() -> ProxyConfig:
             10.0, float(os.getenv("PROXY_IDLE_TIMEOUT_SECONDS", "120"))
         ),
         tunnel_max_seconds=max(
-            60.0, float(os.getenv("PROXY_TUNNEL_MAX_SECONDS", "1800"))
+            0.0, float(os.getenv("PROXY_TUNNEL_MAX_SECONDS", "0"))
         ),
     )
 
@@ -636,9 +638,7 @@ class SelectiveProxyServer:
             # not escape asyncio's client callback as unhandled tracebacks.
             pass
         finally:
-            writer.close()
-            with contextlib.suppress(ConnectionError, OSError, asyncio.CancelledError):
-                await writer.wait_closed()
+            await _close_writer(writer)
 
     async def _serve_direct(
         self,
@@ -826,11 +826,11 @@ class SelectiveProxyServer:
             port,
             self.config,
         )
-        client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        await client_writer.drain()
         try:
+            client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await client_writer.drain()
             with contextlib.suppress(TimeoutError, ConnectionError, OSError):
-                async with asyncio.timeout(self.config.tunnel_max_seconds):
+                async with asyncio.timeout(self.config.tunnel_max_seconds or None):
                     await _relay_bidirectionally(
                         client_reader,
                         client_writer,
@@ -839,9 +839,7 @@ class SelectiveProxyServer:
                         idle_timeout=self.config.idle_timeout_seconds,
                     )
         finally:
-            upstream_writer.close()
-            with contextlib.suppress(Exception):
-                await upstream_writer.wait_closed()
+            await _close_writer(upstream_writer)
 
     async def _handle_tls_ip_connect(
         self,
@@ -869,7 +867,7 @@ class SelectiveProxyServer:
             upstream_writer.write(client_hello)
             await upstream_writer.drain()
             with contextlib.suppress(TimeoutError, ConnectionError, OSError):
-                async with asyncio.timeout(self.config.tunnel_max_seconds):
+                async with asyncio.timeout(self.config.tunnel_max_seconds or None):
                     await _relay_bidirectionally(
                         client_reader,
                         client_writer,
@@ -888,9 +886,7 @@ class SelectiveProxyServer:
             pass
         finally:
             if upstream_writer is not None:
-                upstream_writer.close()
-                with contextlib.suppress(Exception):
-                    await upstream_writer.wait_closed()
+                await _close_writer(upstream_writer)
 
     async def _handle_http(
         self,
@@ -931,11 +927,11 @@ class SelectiveProxyServer:
         filtered_headers["connection"] = "close"
         request_head = [f"{method} {origin_target} {version}"]
         request_head.extend(f"{key}: {value}" for key, value in filtered_headers.items())
-        upstream_writer.write(("\r\n".join(request_head) + "\r\n\r\n").encode("latin-1"))
-        await upstream_writer.drain()
         try:
+            upstream_writer.write(("\r\n".join(request_head) + "\r\n\r\n").encode("latin-1"))
+            await upstream_writer.drain()
             with contextlib.suppress(TimeoutError, ConnectionError, OSError):
-                async with asyncio.timeout(self.config.tunnel_max_seconds):
+                async with asyncio.timeout(self.config.tunnel_max_seconds or None):
                     await _relay_bidirectionally(
                         client_reader,
                         client_writer,
@@ -944,9 +940,7 @@ class SelectiveProxyServer:
                         idle_timeout=self.config.idle_timeout_seconds,
                     )
         finally:
-            upstream_writer.close()
-            with contextlib.suppress(Exception):
-                await upstream_writer.wait_closed()
+            await _close_writer(upstream_writer)
 
 
 def _parse_headers(block: bytes) -> tuple[str, dict[str, str]]:
@@ -1048,8 +1042,6 @@ async def _open_public_connection(
     port: int,
     config: ProxyConfig,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    addresses = await _resolve_public_addresses(host, port)
-
     async def connect(
         row: tuple[int, int, int, str, tuple[object, ...]],
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
@@ -1061,10 +1053,15 @@ async def _open_public_connection(
             proto=protocol,
         )
 
-    tasks = [asyncio.create_task(connect(row)) for row in addresses[:8]]
+    tasks: list[asyncio.Task] = []
+    connection: tuple[asyncio.StreamReader, asyncio.StreamWriter] | None = None
     last_error: BaseException | None = None
+    phase = "dns"
     try:
         async with asyncio.timeout(config.connect_timeout_seconds):
+            addresses = await _resolve_public_addresses(host, port)
+            phase = "tcp"
+            tasks = [asyncio.create_task(connect(row)) for row in addresses[:8]]
             for completed in asyncio.as_completed(tasks):
                 try:
                     connection = await completed
@@ -1081,8 +1078,25 @@ async def _open_public_connection(
         for task in tasks:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-    raise ConnectionError("upstream connection failed") from last_error
+        async def close_attempts(keep: object) -> None:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # More than one attempt may succeed before the winner is selected.
+            await asyncio.gather(*(
+                _close_writer(result[1])
+                for result in results
+                if isinstance(result, tuple) and result is not keep
+            ))
+
+        try:
+            await close_attempts(connection)
+        except asyncio.CancelledError:
+            # If cancellation interrupts cleanup, the winner is never handed
+            # to the caller either, so close every successful connection.
+            await close_attempts(None)
+            raise
+    raise ConnectionError(
+        f"upstream {phase} connection failed ({type(last_error).__name__})"
+    ) from last_error
 
 
 async def _resolve_public_addresses(
@@ -1252,32 +1266,65 @@ async def _relay_bidirectionally(
     *,
     idle_timeout: float,
 ) -> None:
+    loop = asyncio.get_running_loop()
+    last_activity = loop.time()
+
+    def activity() -> None:
+        nonlocal last_activity
+        last_activity = loop.time()
+
+    async def watch_idle() -> None:
+        while True:
+            remaining = idle_timeout - (loop.time() - last_activity)
+            if remaining <= 0:
+                return
+            await asyncio.sleep(remaining)
+
     tasks = {
-        asyncio.create_task(_pump(client_reader, upstream_writer, idle_timeout)),
-        asyncio.create_task(_pump(upstream_reader, client_writer, idle_timeout)),
+        asyncio.create_task(_pump(client_reader, upstream_writer, activity)),
+        asyncio.create_task(_pump(upstream_reader, client_writer, activity)),
+        asyncio.create_task(watch_idle()),
     }
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    for task in done:
-        with contextlib.suppress(ConnectionError, OSError, TimeoutError):
-            await task
-    for task in pending:
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    try:
+        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            with contextlib.suppress(ConnectionError, OSError, TimeoutError):
+                await task
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _pump(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
-    idle_timeout: float,
+    activity: Callable[[], None],
 ) -> None:
     while True:
-        chunk = await asyncio.wait_for(reader.read(64 * 1024), timeout=idle_timeout)
+        chunk = await reader.read(64 * 1024)
         if not chunk:
             return
+        activity()
         writer.write(chunk)
         await writer.drain()
+        activity()
+
+
+async def _close_writer(writer: asyncio.StreamWriter) -> None:
+    """Bound TLS shutdown and release the socket even on cancellation."""
+    closed = False
+    writer.close()
+    try:
+        async with asyncio.timeout(_STREAM_CLOSE_TIMEOUT):
+            await writer.wait_closed()
+        closed = True
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        if not closed:
+            writer.transport.abort()
 
 
 async def _send_proxy_auth_required(writer: asyncio.StreamWriter) -> None:
