@@ -331,6 +331,10 @@ def test_default_allowlist_covers_blocked_heygen_app_and_api() -> None:
         ("google", "youtube.com"),
         ("social_and_messaging", "telegram.org"),
         ("media", "netflix.com"),
+        ("media", "iyf.tv"),
+        ("media", "pipecdn.vip"),
+        ("media", "olevod.com"),
+        ("media", "nivod.tv"),
         ("developer_and_productivity", "github.com"),
         ("news_and_reference", "wikipedia.org"),
         ("shared_infrastructure", "cloudfront.net"),
@@ -350,7 +354,7 @@ def test_default_allowlist_is_normalized_unique_and_broad() -> None:
         for domain in domains
     )
 
-    assert len(DEFAULT_PROXY_DOMAINS) == 249
+    assert len(DEFAULT_PROXY_DOMAINS) == 271
     assert DEFAULT_PROXY_DOMAINS == normalize_domains(grouped_domains)
 
 

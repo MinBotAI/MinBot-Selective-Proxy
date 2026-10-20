@@ -40,6 +40,25 @@ Apple App Attest 端点改由进程规则覆盖，不再扩大普通 App 的 all
 基础设施规则会扩大代理流量与带宽消耗，不得仅因某个境外服务使用了某家 CDN、登录、
 监控或客服供应商，就把该供应商的整个根域名加入默认集合。
 
+### 2026-10-20 视频站补充
+
+默认集合增加 22 个专用域名，共 271 个后缀。爱壹帆的 `iyf.tv` 覆盖首页、
+`m10.iyf.tv` API、图片和相关接口；`pipecdn.vip` 覆盖本次浏览器实测的 HLS
+播放列表和 TS 分片。补充 `yfsp.tv`，以及欧乐影院、泥巴/泥视频的专用域名。
+后两组按 v2fly/domain-list-community 的 `olevod` 和 `mudvod` 列表核对，
+并不表示每个备用域名或每部影片都完成播放验收。
+
+来源：
+- https://github.com/v2fly/domain-list-community/blob/master/data/iyf
+- https://github.com/v2fly/domain-list-community/blob/master/data/olevod
+- https://github.com/v2fly/domain-list-community/blob/master/data/mudvod
+
+完整 Karing 新手恢复包使用静态自定义分流，不会因服务器 allowlist 更新自动变化。
+可用 `clients/karing/update_backup_rules.py` 对私有原包进行增量更新：只替换
+`karing_routing_group.json` 中唯一的 MinBot 代理组，保留其余 ZIP 条目原始内容。
+发布时沿用原有分享 token、域名和下载路径；已导入的旧静态包需要重新恢复或手动
+同步分流。恢复会覆盖 Karing 原配置，应先备份接收者自己的其他配置。
+
 ## API
 
 以下示例不会把密码写入命令；`curl` 会交互提示密码：
