@@ -230,6 +230,31 @@ async def test_data_buffered_before_relay_is_forwarded():
 
 
 @pytest.mark.asyncio
+async def test_buffered_data_keeps_backpressure_when_relay_starts():
+    async with Tunnel() as t:
+        t.proxy_client_w.get_extra_info("socket").setsockopt(
+            socket.SOL_SOCKET, socket.SO_SNDBUF, 4096
+        )
+        t.client_w.transport.pause_reading()
+        # A final StreamReader callback can cross its read limit before the
+        # transport is paused. Reproduce that backlog before protocol takeover.
+        payload = b"x" * (384 * 1024)
+        t.proxy_up_r.feed_data(payload)
+        relay = t.relay()
+        try:
+            await asyncio.sleep(0.02)
+            assert t.proxy_client_w.transport.get_write_buffer_size() > server._RELAY_WRITE_HIGH_WATER
+            assert not t.proxy_up_w.transport.is_reading()
+            t.client_w.transport.resume_reading()
+            assert await asyncio.wait_for(t.client_r.readexactly(len(payload)), 1) == payload
+            await asyncio.sleep(0.02)
+            assert t.proxy_up_w.transport.is_reading()
+        finally:
+            relay.cancel()
+            await asyncio.gather(relay, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_slow_reader_applies_backpressure_to_sender():
     async with Tunnel() as t:
         t.client_w.transport.pause_reading()

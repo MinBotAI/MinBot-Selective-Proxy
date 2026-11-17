@@ -1301,9 +1301,17 @@ class _DnsCache:
             if entry.rows is not None and now < entry.stale_until:
                 refresh = self._refresh(key)
                 done, _ = await asyncio.wait({refresh}, timeout=_DNS_STALE_WAIT)
-                if not done or refresh.cancelled() or refresh.exception() is not None:
+                if done and not refresh.cancelled():
+                    error = refresh.exception()
+                    if error is None:
+                        return refresh.result()
+                    if isinstance(error, socket.gaierror) and error.errno in _DNS_NAME_ERRORS:
+                        # A deleted name is not a temporary resolver failure.
+                        raise error
+                # The refresh wait itself can cross the stale deadline.
+                if loop.time() < entry.stale_until:
                     return entry.rows
-                return refresh.result()
+                return await asyncio.shield(refresh)
         return await asyncio.shield(self._refresh(key))
 
     def _refresh(self, key: str) -> asyncio.Task:
@@ -1620,6 +1628,7 @@ class _RelayEnd(asyncio.Protocol):
         self.peer: _RelayEnd
         self.eof = False
         self.lost = False
+        self.write_paused = False
         self.tls = writer.get_extra_info("sslcontext") is not None
         self._backlog = b""
         self._initial_eof = False
@@ -1629,6 +1638,7 @@ class _RelayEnd(asyncio.Protocol):
         """Take the transport over from the StreamReader protocol."""
         transport = self.transport
         self.previous = transport.get_protocol()
+        self.write_paused = bool(getattr(self.previous, "_paused", False))
         # Bytes the client pipelined after its request head (or an upstream
         # sent early) are still buffered in the StreamReader.
         buffer = getattr(self.reader, "_buffer", None)
@@ -1658,9 +1668,10 @@ class _RelayEnd(asyncio.Protocol):
             if not self.eof_received():
                 self.relay.finish()
             return
-        # The StreamReader may have paused reading when its buffer filled.
+        # Resume a StreamReader pause only if flushing the initial backlog
+        # has not filled the peer's output buffer and applied backpressure.
         with contextlib.suppress(AttributeError, NotImplementedError, RuntimeError):
-            if not self.transport.is_reading():
+            if not self.peer.write_paused and not self.transport.is_reading():
                 self.transport.resume_reading()
 
     def detach(self) -> None:
@@ -1705,11 +1716,13 @@ class _RelayEnd(asyncio.Protocol):
 
     def pause_writing(self) -> None:
         # Our outgoing buffer is full: stop reading from the peer.
+        self.write_paused = True
         if not self.peer.lost:
             with contextlib.suppress(AttributeError, NotImplementedError, RuntimeError):
                 self.peer.transport.pause_reading()
 
     def resume_writing(self) -> None:
+        self.write_paused = False
         peer = self.peer
         if not peer.lost and not peer.eof and not self.relay.done.done():
             with contextlib.suppress(AttributeError, NotImplementedError, RuntimeError):

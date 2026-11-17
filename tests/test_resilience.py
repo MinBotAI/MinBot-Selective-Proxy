@@ -85,6 +85,33 @@ async def test_stale_answer_is_used_when_resolver_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_name_error_replaces_stale_answer_immediately(monkeypatch):
+    server._DNS_CACHE.ttl = 0.02
+    resolver = FakeResolver(monkeypatch)
+    await server._resolve_public_addresses("deleted.example", 443)
+    await asyncio.sleep(0.03)
+    resolver.error = socket.gaierror(socket.EAI_NONAME, "not known")
+    for _ in range(2):
+        with pytest.raises(socket.gaierror):
+            await server._resolve_public_addresses("deleted.example", 443)
+    assert resolver.calls == ["deleted.example", "deleted.example"]
+
+
+@pytest.mark.asyncio
+async def test_stale_answer_expiring_during_refresh_is_not_used(monkeypatch):
+    server._DNS_CACHE.ttl = 0.02
+    resolver = FakeResolver(monkeypatch)
+    await server._resolve_public_addresses("expired.example", 443)
+    entry = server._DNS_CACHE._entries["expired.example"]
+    entry.expires = asyncio.get_running_loop().time() - 1
+    entry.stale_until = asyncio.get_running_loop().time() + 0.01
+    resolver.delay = 0.03
+    resolver.error = socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+    with pytest.raises(socket.gaierror):
+        await server._resolve_public_addresses("expired.example", 443)
+
+
+@pytest.mark.asyncio
 async def test_stale_answer_is_used_when_resolver_is_slow(monkeypatch):
     server._DNS_CACHE.ttl = 0.02
     monkeypatch.setattr(server, "_DNS_STALE_WAIT", 0.02)
