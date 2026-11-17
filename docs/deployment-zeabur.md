@@ -17,6 +17,25 @@
 Zeabur 的 Public TCP 主机和端口是客户端实际连接地址。改变网络配置后，应同步更新
 macOS 脚本、Karing 模板、Chrome 默认值和客户端文档。
 
+## main 自动发布
+
+`selective-proxy` 的 Git 触发器绑定 `MinBotAI/MinBot-Selective-Proxy` 的 `main`，
+Watch Paths 为 `*`。PR 合并或直接推送到 `main` 后，由 Zeabur 自动构建并发布；
+其他分支不会触发该生产服务。包括文档在内的所有 main 提交都触发发布。
+
+`karing-share` 使用部署配置内嵌的服务代码及运行时私有包，不依赖本仓库文件，
+因此不绑定 Git 自动触发器。仓库提交不会重建它；需要更新时单独发布该服务。
+调整 Git 触发器不会停止当前运行的服务。
+
+不要恢复旧仓库路径 `/Dockerfile.selective-proxy`、`/deploy/selective_proxy`，
+它们与本仓库根目录 `Dockerfile`、`src/minbot_selective_proxy/` 不匹配，会漏掉更新。
+
+变更触发配置后，应通过一次真实 PR 合并验证：`selective-proxy` 出现对应 main
+提交的新部署并达到 `RUNNING`，`karing-share` 的部署 ID 保持不变，再检查代理健康、
+认证、公网请求和私网拦截。不要用手动部署代替自动触发验收。
+
+平台 Watch Paths 语法参见 [Zeabur 官方文档](https://zeabur.com/docs/en-US/deploy/config/watch-paths)。
+
 ## Secret
 
 必须通过 Zeabur Secret 设置：
