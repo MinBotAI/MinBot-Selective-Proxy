@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import socket
@@ -515,6 +516,13 @@ async def test_close_keeps_flushing_to_a_slow_but_live_reader(monkeypatch):
     proxy_r, proxy_w, peer_r, peer_w = await stream_pair()
     try:
         peer_w.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16384)
+        # A large kernel send buffer that only reports writability once much
+        # of it is free (Linux's default behaviour) keeps the user-space
+        # buffer unchanged for long stretches while the kernel still drains.
+        proxy_sock = proxy_w.get_extra_info("socket")
+        proxy_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+        with contextlib.suppress(OSError):
+            proxy_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDLOWAT, 2 * 1024 * 1024)
         payload = os.urandom(6 * 1024 * 1024)
         proxy_w.write(payload)
         closer = asyncio.create_task(server._close_writer(proxy_w))

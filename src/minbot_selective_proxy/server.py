@@ -18,6 +18,8 @@ import os
 import re
 import socket
 import ssl
+import struct
+import sys
 import tempfile
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -1668,10 +1670,7 @@ class _RelayEnd(asyncio.Protocol):
                 self.transport.pause_reading()
 
     def pending_writes(self) -> int:
-        try:
-            return self.transport.get_write_buffer_size()
-        except (AttributeError, NotImplementedError, RuntimeError):
-            return 0
+        return _unsent_bytes(self.transport)
 
     # asyncio.Protocol callbacks ------------------------------------------
     def data_received(self, data: bytes) -> None:
@@ -1740,7 +1739,7 @@ async def _close_writer(writer: asyncio.StreamWriter) -> None:
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _STREAM_CLOSE_MAX
-        pending = _write_buffer_size(writer)
+        pending = _unsent_bytes(writer.transport)
         while True:
             done, _ = await asyncio.wait({waiter}, timeout=_STREAM_CLOSE_TIMEOUT)
             if done:
@@ -1748,7 +1747,7 @@ async def _close_writer(writer: asyncio.StreamWriter) -> None:
                     waiter.result()
                     closed = True
                 break
-            remaining = _write_buffer_size(writer)
+            remaining = _unsent_bytes(writer.transport)
             if not remaining or remaining >= pending or loop.time() >= deadline:
                 break
             pending = remaining
@@ -1760,11 +1759,50 @@ async def _close_writer(writer: asyncio.StreamWriter) -> None:
         waiter.add_done_callback(_retrieve_result)
 
 
-def _write_buffer_size(writer: asyncio.StreamWriter) -> int:
+def _unsent_bytes(transport: asyncio.BaseTransport) -> int:
+    """Bytes not yet delivered: asyncio's buffer plus the kernel send queue.
+
+    Linux only reports a socket writable again once a large part of its
+    (often multi-megabyte) send buffer is free, so asyncio's own buffer can
+    stay unchanged for seconds while a slow client is still receiving. The
+    kernel queue shows that progress.
+    """
+    total = 0
     try:
-        return int(writer.transport.get_write_buffer_size())
+        total = int(transport.get_write_buffer_size())  # type: ignore[attr-defined]
     except (AttributeError, NotImplementedError, RuntimeError, TypeError, ValueError):
+        pass
+    return total + _kernel_send_queue(transport)
+
+
+try:
+    import fcntl
+    import termios
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+# SIOCOUTQ (== TIOCOUTQ) on Linux; SO_NWRITE on macOS. Both count bytes the
+# kernel has not yet had acknowledged by the peer.
+_SIOCOUTQ = getattr(termios, "TIOCOUTQ", None) if sys.platform.startswith("linux") else None
+_SO_NWRITE = 0x1024 if sys.platform == "darwin" else None
+
+
+def _kernel_send_queue(transport: asyncio.BaseTransport) -> int:
+    try:
+        sock = transport.get_extra_info("socket")
+        if sock is None:
+            return 0
+        descriptor = sock.fileno()
+        if descriptor < 0:
+            return 0
+        if _SIOCOUTQ is not None and fcntl is not None:
+            raw = fcntl.ioctl(descriptor, _SIOCOUTQ, b"\0\0\0\0")
+            return max(0, struct.unpack("i", raw)[0])
+        if _SO_NWRITE is not None:
+            return max(0, sock.getsockopt(socket.SOL_SOCKET, _SO_NWRITE))
+    except (AttributeError, OSError, TypeError, ValueError, struct.error):
         return 0
+    return 0
 
 
 def _retrieve_result(future: asyncio.Future) -> None:
