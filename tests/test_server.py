@@ -895,6 +895,9 @@ async def test_public_connection_does_not_wait_for_unreachable_first_address(
 
     monkeypatch.setattr(server_module, "_resolve_public_addresses", fake_resolve)
     monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+    # The next address starts after the Happy Eyeballs delay, not after the
+    # unreachable address times out.
+    monkeypatch.setattr(server_module, "_HAPPY_EYEBALLS_DELAY", 0.05)
 
     connection = await asyncio.wait_for(
         _open_public_connection(

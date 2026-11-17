@@ -18,8 +18,11 @@ import os
 import re
 import socket
 import ssl
+import struct
+import sys
 import tempfile
-from collections.abc import Callable
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -329,7 +332,26 @@ _HEADER_LIMIT = 65_536
 _TLS_CLIENT_HELLO_LIMIT = 65_536
 _TLS_RECORD_LIMIT = 18_432
 _ADMIN_BODY_LIMIT = 16_384
+_STREAM_LIMIT = 64 * 1024
+# A close waits this long without write-buffer progress before aborting, and
+# never longer than _STREAM_CLOSE_MAX in total, so slow clients still receive
+# the tail of a response while stuck peers are released.
 _STREAM_CLOSE_TIMEOUT = 5.0
+_STREAM_CLOSE_MAX = 60.0
+_RELAY_WRITE_HIGH_WATER = 256 * 1024
+_RELAY_WRITE_LOW_WATER = 64 * 1024
+# RFC 8305 connection-attempt delay: start the next address only when the
+# previous attempt has neither succeeded nor failed within this delay.
+_HAPPY_EYEBALLS_DELAY = 0.25
+_MAX_CONNECT_ATTEMPTS = 12
+_ADDRESS_PENALTY_SECONDS = 60.0
+_ADDRESS_PENALTY_LIMIT = 4096
+_DNS_CACHE_LIMIT = 4096
+_DNS_NEGATIVE_TTL = 5.0
+_DNS_STALE_TTL = 600.0
+# How long a request waits for a refresh before using a stale answer.
+_DNS_STALE_WAIT = 1.0
+_DEFAULT_LISTEN_BACKLOG = 1024
 _PROXY_HOST_PATTERN = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
 _ALLOWED_HTTP_METHODS = frozenset(
     {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
@@ -361,6 +383,9 @@ class ProxyConfig:
     connect_timeout_seconds: float = 10.0
     idle_timeout_seconds: float = 120.0
     tunnel_max_seconds: float = 0.0
+    dns_cache_seconds: float = 30.0
+    dns_workers: int = 32
+    listen_backlog: int = _DEFAULT_LISTEN_BACKLOG
 
 
 def load_config() -> ProxyConfig:
@@ -390,6 +415,14 @@ def load_config() -> ProxyConfig:
         ),
         tunnel_max_seconds=max(
             0.0, float(os.getenv("PROXY_TUNNEL_MAX_SECONDS", "0"))
+        ),
+        dns_cache_seconds=max(
+            0.0, float(os.getenv("PROXY_DNS_CACHE_SECONDS", "30"))
+        ),
+        dns_workers=max(4, int(os.getenv("PROXY_DNS_WORKERS", "32"))),
+        listen_backlog=max(
+            16,
+            int(os.getenv("PROXY_LISTEN_BACKLOG", str(_DEFAULT_LISTEN_BACKLOG))),
         ),
     )
 
@@ -659,6 +692,10 @@ class SelectiveProxyServer:
             # replying, or closing. These are normal transport events and must
             # not escape asyncio's client callback as unhandled tracebacks.
             pass
+        except Exception:
+            # One malformed or unexpected connection must never take down the
+            # listener callback or leak its socket.
+            _LOGGER.exception("unexpected proxy connection error")
         finally:
             await _close_writer(writer)
 
@@ -1042,7 +1079,10 @@ async def _read_json_body(
 
 
 def _split_authority(authority: str, *, default_port: int) -> tuple[str, int]:
-    parsed = urlsplit(f"//{authority}")
+    try:
+        parsed = urlsplit(f"//{authority}")
+    except ValueError as exc:
+        raise PermissionError("invalid destination") from exc
     if (
         not parsed.hostname
         or parsed.username
@@ -1059,81 +1099,299 @@ def _split_authority(authority: str, *, default_port: int) -> tuple[str, int]:
     return parsed.hostname, port
 
 
+_AddressRow = tuple[int, int, int, str, tuple[object, ...]]
+
+
 async def _open_public_connection(
     host: str,
     port: int,
     config: ProxyConfig,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    async def connect(
-        row: tuple[int, int, int, str, tuple[object, ...]],
-    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        family, _socktype, protocol, _canonname, sockaddr = row
-        return await asyncio.open_connection(
-            host=str(sockaddr[0]),
-            port=port,
-            family=family,
-            proto=protocol,
-        )
-
-    tasks: list[asyncio.Task] = []
-    connection: tuple[asyncio.StreamReader, asyncio.StreamWriter] | None = None
+    """Resolve and connect within one deadline, racing addresses per RFC 8305."""
     last_error: BaseException | None = None
     phase = "dns"
     try:
         async with asyncio.timeout(config.connect_timeout_seconds):
             addresses = await _resolve_public_addresses(host, port)
             phase = "tcp"
-            tasks = [asyncio.create_task(connect(row)) for row in addresses[:8]]
-            for completed in asyncio.as_completed(tasks):
-                try:
-                    connection = await completed
-                except OSError as exc:
-                    last_error = exc
-                    continue
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                return connection
-    except TimeoutError as exc:
-        last_error = exc
-    finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        async def close_attempts(keep: object) -> None:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            # More than one attempt may succeed before the winner is selected.
-            await asyncio.gather(*(
-                _close_writer(result[1])
-                for result in results
-                if isinstance(result, tuple) and result is not keep
-            ))
-
-        try:
-            await close_attempts(connection)
-        except asyncio.CancelledError:
-            # If cancellation interrupts cleanup, the winner is never handed
-            # to the caller either, so close every successful connection.
-            await close_attempts(None)
+            return await _connect_staggered(_order_addresses(addresses), port)
+    except (TimeoutError, OSError) as exc:
+        if isinstance(exc, PermissionError):
             raise
+        last_error = exc
     raise ConnectionError(
         f"upstream {phase} connection failed ({type(last_error).__name__})"
     ) from last_error
 
 
-async def _resolve_public_addresses(
-    host: str,
+async def _connect_staggered(
+    rows: list[_AddressRow],
     port: int,
-) -> list[tuple[int, int, int, str, tuple[object, ...]]]:
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Happy Eyeballs: one attempt at a time, the next after a short delay.
+
+    A failed attempt immediately starts the next address, so unreachable
+    addresses cost nothing, while a healthy first address costs a single TCP
+    handshake instead of one per resolved address.
+    """
     loop = asyncio.get_running_loop()
-    rows = await loop.getaddrinfo(
+    attempts: dict[asyncio.Task, tuple[str, float]] = {}
+    pending: set[asyncio.Task] = set()
+    candidates = iter(rows)
+    exhausted = False
+    last_error: BaseException | None = None
+    handed_over: tuple[asyncio.StreamReader, asyncio.StreamWriter] | None = None
+    try:
+        while True:
+            if not exhausted:
+                row = next(candidates, None)
+                if row is None:
+                    exhausted = True
+                else:
+                    task = loop.create_task(_connect_address(row, port))
+                    attempts[task] = (str(row[4][0]), loop.time())
+                    pending.add(task)
+            if not pending:
+                break
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=None if exhausted else _HAPPY_EYEBALLS_DELAY,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            winner: asyncio.Task | None = None
+            for task in done:
+                if task.cancelled():
+                    continue
+                error = task.exception()
+                if error is not None:
+                    last_error = error
+                    _penalize_address(attempts[task][0])
+                elif winner is None:
+                    winner = task
+            if winner is not None:
+                # Addresses that were started earlier but are still silent are
+                # probably black-holed; try them last next time.
+                for task in pending:
+                    if attempts[task][1] < attempts[winner][1]:
+                        _penalize_address(attempts[task][0])
+                handed_over = winner.result()
+                return handed_over
+    finally:
+        for task in attempts:
+            if not task.done():
+                task.cancel()
+        try:
+            await asyncio.gather(*attempts, return_exceptions=True)
+        except BaseException:
+            # Cancelled during cleanup: the winner never reaches the caller.
+            handed_over = None
+            raise
+        finally:
+            for task in attempts:
+                if task.done() and not task.cancelled() and task.exception() is None:
+                    connection = task.result()
+                    if connection is not handed_over:
+                        connection[1].close()
+    raise last_error or OSError("no public address accepted the connection")
+
+
+async def _connect_address(
+    row: _AddressRow,
+    port: int,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    family, _socktype, protocol, _canonname, sockaddr = row
+    return await asyncio.open_connection(
+        host=str(sockaddr[0]),
+        port=port,
+        family=family,
+        proto=protocol,
+        limit=_STREAM_LIMIT,
+    )
+
+
+_ADDRESS_PENALTIES: dict[str, float] = {}
+
+
+def _penalize_address(address: str) -> None:
+    now = _monotonic()
+    if len(_ADDRESS_PENALTIES) >= _ADDRESS_PENALTY_LIMIT:
+        for key, expires in list(_ADDRESS_PENALTIES.items()):
+            if expires <= now:
+                del _ADDRESS_PENALTIES[key]
+        if len(_ADDRESS_PENALTIES) >= _ADDRESS_PENALTY_LIMIT:
+            _ADDRESS_PENALTIES.clear()
+    _ADDRESS_PENALTIES[address] = now + _ADDRESS_PENALTY_SECONDS
+
+
+def _order_addresses(rows: list[_AddressRow]) -> list[_AddressRow]:
+    """Dedupe, interleave address families (RFC 8305) and demote failures."""
+    now = _monotonic()
+    seen: set[str] = set()
+    by_family: dict[int, list[_AddressRow]] = {}
+    for row in rows:
+        address = str(row[4][0])
+        if address in seen:
+            continue
+        seen.add(address)
+        by_family.setdefault(row[0], []).append(row)
+    interleaved: list[_AddressRow] = []
+    queues = list(by_family.values())
+    while queues:
+        for queue in queues:
+            interleaved.append(queue.pop(0))
+        queues = [queue for queue in queues if queue]
+    interleaved.sort(key=lambda row: _ADDRESS_PENALTIES.get(str(row[4][0]), 0.0) > now)
+    return interleaved[:_MAX_CONNECT_ATTEMPTS]
+
+
+def _monotonic() -> float:
+    return asyncio.get_running_loop().time()
+
+
+@dataclass(slots=True)
+class _DnsEntry:
+    rows: list[_AddressRow] | None
+    error: OSError | None
+    expires: float
+    refresh_at: float
+    stale_until: float
+
+
+class _DnsCache:
+    """Coalesced, TTL-bounded name resolution.
+
+    getaddrinfo runs in a thread pool and cannot be cancelled. Without
+    coalescing, a burst of tunnels to one new hostname, or a few lookups that
+    hang on a slow resolver, occupy every worker thread and stall DNS for all
+    tunnels. Concurrent lookups for one host share a single resolution,
+    popular hosts are refreshed before they expire, and a stale answer is used
+    when the resolver is slow or temporarily failing (RFC 8767).
+    Addresses are re-validated as public on every use.
+    """
+
+    def __init__(self, ttl: float = 30.0) -> None:
+        self.ttl = ttl
+        self._entries: OrderedDict[str, _DnsEntry] = OrderedDict()
+        self._inflight: dict[str, asyncio.Task] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def clear(self) -> None:
+        self._entries.clear()
+        self._inflight.clear()
+
+    async def lookup(self, host: str) -> list[_AddressRow]:
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self.clear()
+            self._loop = loop
+        if self.ttl <= 0:
+            return await _getaddrinfo(host)
+        key = host.casefold()
+        now = loop.time()
+        entry = self._entries.get(key)
+        if entry is not None:
+            if now < entry.expires:
+                self._entries.move_to_end(key)
+                if entry.error is not None:
+                    raise socket.gaierror(entry.error.errno, entry.error.strerror)
+                if now >= entry.refresh_at:
+                    self._refresh(key)
+                assert entry.rows is not None
+                return entry.rows
+            if entry.rows is not None and now < entry.stale_until:
+                refresh = self._refresh(key)
+                done, _ = await asyncio.wait({refresh}, timeout=_DNS_STALE_WAIT)
+                if done and not refresh.cancelled():
+                    error = refresh.exception()
+                    if error is None:
+                        return refresh.result()
+                    if isinstance(error, socket.gaierror) and error.errno in _DNS_NAME_ERRORS:
+                        # A deleted name is not a temporary resolver failure.
+                        raise error
+                # The refresh wait itself can cross the stale deadline.
+                if loop.time() < entry.stale_until:
+                    return entry.rows
+                return await asyncio.shield(refresh)
+        return await asyncio.shield(self._refresh(key))
+
+    def _refresh(self, key: str) -> asyncio.Task:
+        task = self._inflight.get(key)
+        if task is None:
+            task = asyncio.get_running_loop().create_task(self._resolve(key))
+            self._inflight[key] = task
+            task.add_done_callback(lambda done: self._finish(key, done))
+        return task
+
+    def _finish(self, key: str, task: asyncio.Task) -> None:
+        if self._inflight.get(key) is task:
+            del self._inflight[key]
+        if not task.cancelled():
+            task.exception()
+
+    async def _resolve(self, key: str) -> list[_AddressRow]:
+        loop = asyncio.get_running_loop()
+        try:
+            rows = await _getaddrinfo(key)
+        except OSError as exc:
+            now = loop.time()
+            if isinstance(exc, socket.gaierror) and exc.errno in _DNS_NAME_ERRORS:
+                self._store(key, _DnsEntry(None, exc, now + _DNS_NEGATIVE_TTL, 0.0, 0.0))
+            raise
+        now = loop.time()
+        self._store(
+            key,
+            _DnsEntry(
+                rows,
+                None,
+                now + self.ttl,
+                now + self.ttl * 0.8,
+                now + max(self.ttl, _DNS_STALE_TTL),
+            ),
+        )
+        return rows
+
+    def _store(self, key: str, entry: _DnsEntry) -> None:
+        self._entries[key] = entry
+        self._entries.move_to_end(key)
+        while len(self._entries) > _DNS_CACHE_LIMIT:
+            self._entries.popitem(last=False)
+
+
+_DNS_NAME_ERRORS = frozenset(
+    code
+    for code in (getattr(socket, "EAI_NONAME", None), getattr(socket, "EAI_NODATA", None))
+    if code is not None
+)
+_DNS_CACHE = _DnsCache()
+
+
+async def _getaddrinfo(host: str) -> list[_AddressRow]:
+    loop = asyncio.get_running_loop()
+    return await loop.getaddrinfo(
         host,
-        port,
+        None,
         family=socket.AF_UNSPEC,
         type=socket.SOCK_STREAM,
         proto=socket.IPPROTO_TCP,
     )
-    public_rows: list[tuple[int, int, int, str, tuple[object, ...]]] = []
+
+
+async def _resolve_public_addresses(
+    host: str,
+    port: int,
+) -> list[_AddressRow]:
+    candidate = host.strip("[]")
+    try:
+        literal = ipaddress.ip_address(candidate)
+    except ValueError:
+        rows = await _DNS_CACHE.lookup(host)
+    else:
+        # IP literals need no resolver round trip through the thread pool.
+        if literal.version == 4:
+            rows = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (candidate, port))]
+        else:
+            rows = [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (candidate, port, 0, 0))]
+    public_rows: list[_AddressRow] = []
     for row in rows:
         address = str(row[4][0])
         try:
@@ -1288,65 +1546,281 @@ async def _relay_bidirectionally(
     *,
     idle_timeout: float,
 ) -> None:
-    loop = asyncio.get_running_loop()
-    last_activity = loop.time()
+    """Splice two connections at the transport level until both sides finish.
 
-    def activity() -> None:
-        nonlocal last_activity
-        last_activity = loop.time()
-
-    async def watch_idle() -> None:
-        while True:
-            remaining = idle_timeout - (loop.time() - last_activity)
-            if remaining <= 0:
-                return
-            await asyncio.sleep(remaining)
-
-    tasks = {
-        asyncio.create_task(_pump(client_reader, upstream_writer, activity)),
-        asyncio.create_task(_pump(upstream_reader, client_writer, activity)),
-        asyncio.create_task(watch_idle()),
-    }
+    Each side's transport is switched to a small protocol that writes received
+    data straight to the peer transport. Compared with a StreamReader copy loop
+    this removes a buffer copy and two task wake-ups per chunk, and uses
+    transport flow control (pause/resume) for backpressure. A half-close from
+    one plain-TCP side is forwarded as EOF so the other direction can finish
+    (e.g. a request sent with shutdown(SHUT_WR) still receives its response).
+    The tunnel ends when both directions are done, either side is lost, or
+    neither side has made progress for ``idle_timeout`` seconds.
+    """
+    relay = _Relay(asyncio.get_running_loop(), idle_timeout)
+    client = _RelayEnd(relay, client_reader, client_writer)
+    upstream = _RelayEnd(relay, upstream_reader, upstream_writer)
+    client.peer, upstream.peer = upstream, client
     try:
-        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            with contextlib.suppress(ConnectionError, OSError, TimeoutError):
-                await task
+        client.attach()
+        upstream.attach()
+        client.start()
+        upstream.start()
+        relay.arm()
+        await relay.done
     finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        relay.stop()
+        client.detach()
+        upstream.detach()
 
 
-async def _pump(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    activity: Callable[[], None],
-) -> None:
-    while True:
-        chunk = await reader.read(64 * 1024)
-        if not chunk:
+class _Relay:
+    __slots__ = ("loop", "idle_timeout", "last_activity", "done", "_timer", "_ends", "_last_pending")
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, idle_timeout: float) -> None:
+        self.loop = loop
+        self.idle_timeout = idle_timeout
+        self.last_activity = loop.time()
+        self.done: asyncio.Future[None] = loop.create_future()
+        self._timer: asyncio.TimerHandle | None = None
+        self._ends: list[_RelayEnd] = []
+        self._last_pending = 0
+
+    def finish(self) -> None:
+        if not self.done.done():
+            self.done.set_result(None)
+
+    def arm(self) -> None:
+        if not self.done.done():
+            self._timer = self.loop.call_at(
+                self.last_activity + self.idle_timeout, self._check_idle
+            )
+
+    def stop(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _check_idle(self) -> None:
+        self._timer = None
+        # Data still draining from a write buffer to a slow peer is progress.
+        pending = sum(end.pending_writes() for end in self._ends)
+        if pending != self._last_pending:
+            self._last_pending = pending
+            self.last_activity = self.loop.time()
+        if self.loop.time() - self.last_activity >= self.idle_timeout:
+            self.finish()
+        else:
+            self.arm()
+
+
+class _RelayEnd(asyncio.Protocol):
+    def __init__(
+        self,
+        relay: _Relay,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        self.relay = relay
+        self.reader = reader
+        self.transport: asyncio.Transport = writer.transport  # type: ignore[assignment]
+        self.previous: asyncio.BaseProtocol | None = None
+        self.peer: _RelayEnd
+        self.eof = False
+        self.lost = False
+        self.write_paused = False
+        self.tls = writer.get_extra_info("sslcontext") is not None
+        self._backlog = b""
+        self._initial_eof = False
+        relay._ends.append(self)
+
+    def attach(self) -> None:
+        """Take the transport over from the StreamReader protocol."""
+        transport = self.transport
+        self.previous = transport.get_protocol()
+        self.write_paused = bool(getattr(self.previous, "_paused", False))
+        # Bytes the client pipelined after its request head (or an upstream
+        # sent early) are still buffered in the StreamReader.
+        buffer = getattr(self.reader, "_buffer", None)
+        if buffer:
+            self._backlog = bytes(buffer)
+            buffer.clear()
+        self._initial_eof = self.reader.at_eof() or bool(
+            getattr(self.reader, "_eof", False)
+        )
+        transport.set_protocol(self)
+        if transport.is_closing():
+            self.lost = True
             return
-        activity()
-        writer.write(chunk)
-        await writer.drain()
-        activity()
+        with contextlib.suppress(AttributeError, NotImplementedError, RuntimeError):
+            transport.set_write_buffer_limits(
+                high=_RELAY_WRITE_HIGH_WATER, low=_RELAY_WRITE_LOW_WATER
+            )
+
+    def start(self) -> None:
+        if self._backlog:
+            data, self._backlog = self._backlog, b""
+            self.data_received(data)
+        if self.lost or self.peer.lost:
+            self.relay.finish()
+            return
+        if self._initial_eof:
+            if not self.eof_received():
+                self.relay.finish()
+            return
+        # Resume a StreamReader pause only if flushing the initial backlog
+        # has not filled the peer's output buffer and applied backpressure.
+        with contextlib.suppress(AttributeError, NotImplementedError, RuntimeError):
+            if not self.peer.write_paused and not self.transport.is_reading():
+                self.transport.resume_reading()
+
+    def detach(self) -> None:
+        # Stop forwarding; the callers close both transports afterwards.
+        if not self.lost:
+            with contextlib.suppress(AttributeError, NotImplementedError, RuntimeError):
+                self.transport.pause_reading()
+
+    def pending_writes(self) -> int:
+        return _unsent_bytes(self.transport)
+
+    # asyncio.Protocol callbacks ------------------------------------------
+    def data_received(self, data: bytes) -> None:
+        relay = self.relay
+        relay.last_activity = relay.loop.time()
+        peer = self.peer
+        if peer.lost or relay.done.done():
+            return
+        peer.transport.write(data)
+
+    def eof_received(self) -> bool:
+        if self.eof:
+            return not self.tls
+        self.eof = True
+        self.relay.last_activity = self.relay.loop.time()
+        peer = self.peer
+        if self.tls or peer.lost or not peer.transport.can_write_eof():
+            # Half-close cannot be expressed on this pair (TLS has no
+            # half-close); end the tunnel once queued data is flushed.
+            self.relay.finish()
+            return False
+        try:
+            peer.transport.write_eof()
+        except (OSError, RuntimeError):
+            self.relay.finish()
+            return False
+        if peer.eof:
+            # Both directions are complete; the callers close the sockets.
+            self.relay.finish()
+        # Keep our side open so the peer's remaining data can reach it.
+        return True
+
+    def pause_writing(self) -> None:
+        # Our outgoing buffer is full: stop reading from the peer.
+        self.write_paused = True
+        if not self.peer.lost:
+            with contextlib.suppress(AttributeError, NotImplementedError, RuntimeError):
+                self.peer.transport.pause_reading()
+
+    def resume_writing(self) -> None:
+        self.write_paused = False
+        peer = self.peer
+        if not peer.lost and not peer.eof and not self.relay.done.done():
+            with contextlib.suppress(AttributeError, NotImplementedError, RuntimeError):
+                peer.transport.resume_reading()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        self.lost = True
+        self.relay.finish()
+        # Let the original StreamReader/StreamWriter observe the close so
+        # StreamWriter.wait_closed() keeps working for the callers.
+        if self.previous is not None:
+            with contextlib.suppress(Exception):
+                self.previous.connection_lost(exc)
 
 
 async def _close_writer(writer: asyncio.StreamWriter) -> None:
-    """Bound TLS shutdown and release the socket even on cancellation."""
+    """Close gracefully while the peer keeps draining, then force release.
+
+    The transport flushes queued data before closing. A slow but live client
+    keeps the close alive as long as its write buffer keeps shrinking (so the
+    end of a response is not cut off), while a stuck peer or TLS shutdown is
+    aborted after ``_STREAM_CLOSE_TIMEOUT`` seconds without progress.
+    """
     closed = False
     writer.close()
+    waiter = asyncio.ensure_future(writer.wait_closed())
     try:
-        async with asyncio.timeout(_STREAM_CLOSE_TIMEOUT):
-            await writer.wait_closed()
-        closed = True
-    except (ConnectionError, OSError):
-        pass
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _STREAM_CLOSE_MAX
+        pending = _unsent_bytes(writer.transport)
+        while True:
+            done, _ = await asyncio.wait({waiter}, timeout=_STREAM_CLOSE_TIMEOUT)
+            if done:
+                with contextlib.suppress(ConnectionError, OSError):
+                    waiter.result()
+                    closed = True
+                break
+            remaining = _unsent_bytes(writer.transport)
+            if not remaining or remaining >= pending or loop.time() >= deadline:
+                break
+            pending = remaining
     finally:
         if not closed:
             writer.transport.abort()
+        if not waiter.done():
+            waiter.cancel()
+        waiter.add_done_callback(_retrieve_result)
+
+
+def _unsent_bytes(transport: asyncio.BaseTransport) -> int:
+    """Bytes not yet delivered: asyncio's buffer plus the kernel send queue.
+
+    Linux only reports a socket writable again once a large part of its
+    (often multi-megabyte) send buffer is free, so asyncio's own buffer can
+    stay unchanged for seconds while a slow client is still receiving. The
+    kernel queue shows that progress.
+    """
+    total = 0
+    try:
+        total = int(transport.get_write_buffer_size())  # type: ignore[attr-defined]
+    except (AttributeError, NotImplementedError, RuntimeError, TypeError, ValueError):
+        pass
+    return total + _kernel_send_queue(transport)
+
+
+try:
+    import fcntl
+    import termios
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+# SIOCOUTQ (== TIOCOUTQ) on Linux; SO_NWRITE on macOS. Both count bytes the
+# kernel has not yet had acknowledged by the peer.
+_SIOCOUTQ = getattr(termios, "TIOCOUTQ", None) if sys.platform.startswith("linux") else None
+_SO_NWRITE = 0x1024 if sys.platform == "darwin" else None
+
+
+def _kernel_send_queue(transport: asyncio.BaseTransport) -> int:
+    try:
+        sock = transport.get_extra_info("socket")
+        if sock is None:
+            return 0
+        descriptor = sock.fileno()
+        if descriptor < 0:
+            return 0
+        if _SIOCOUTQ is not None and fcntl is not None:
+            raw = fcntl.ioctl(descriptor, _SIOCOUTQ, b"\0\0\0\0")
+            return max(0, struct.unpack("i", raw)[0])
+        if _SO_NWRITE is not None:
+            return max(0, sock.getsockopt(socket.SOL_SOCKET, _SO_NWRITE))
+    except (AttributeError, OSError, TypeError, ValueError, struct.error):
+        return 0
+    return 0
+
+
+def _retrieve_result(future: asyncio.Future) -> None:
+    if not future.cancelled():
+        future.exception()
 
 
 async def _send_proxy_auth_required(writer: asyncio.StreamWriter) -> None:
@@ -1402,11 +1876,20 @@ async def main() -> None:
     tls_port = int(os.getenv("PROXY_TLS_PORT", "8443"))
     tls_context = load_tls_context()
     server = SelectiveProxyServer(config)
+    # getaddrinfo blocks a worker thread per lookup; the default pool has only
+    # min(32, cpus + 4) threads, which is 5 on a one-CPU container.
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=config.dns_workers, thread_name_prefix="dns")
+    )
+    _DNS_CACHE.ttl = config.dns_cache_seconds
     listeners = [await asyncio.start_server(
         server.handle_client,
         host="0.0.0.0",
         port=port,
         limit=_HEADER_LIMIT,
+        # asyncio defaults to 100; browsers open dozens of tunnels at once and
+        # an overflowing accept queue costs clients a 1 s SYN retransmit.
+        backlog=config.listen_backlog,
         start_serving=True,
     )]
     if tls_context is not None:
@@ -1416,15 +1899,19 @@ async def main() -> None:
                 host="0.0.0.0",
                 port=tls_port,
                 ssl=tls_context,
+                ssl_handshake_timeout=config.connect_timeout_seconds,
                 limit=_HEADER_LIMIT,
+                backlog=config.listen_backlog,
                 start_serving=True,
             )
         )
     _LOGGER.info(
-        "proxy listeners ready plain_port=%d tls_port=%s max_connections=%d",
+        "proxy listeners ready plain_port=%d tls_port=%s max_connections=%d "
+        "dns_cache_seconds=%g",
         port,
         tls_port if tls_context is not None else "disabled",
         config.max_connections,
+        config.dns_cache_seconds,
     )
     try:
         await asyncio.gather(*(listener.serve_forever() for listener in listeners))
