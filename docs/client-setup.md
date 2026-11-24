@@ -1,8 +1,7 @@
 # 客户端配置
 
-当前公共入口为 `43.156.119.18:31456`（兼容明文）和
-`43.156.119.18:31528`（TLS）。端口由托管平台映射，部署网络配置改变后可能变化；
-连接失效时先核对服务的 Public TCP 地址。
+默认出口位于洛杉矶。`142.11.254.133:31528` 提供固定公钥的 TLS 代理；
+`142.11.254.133:31456` 用于 HTTP 兼容客户端和规则下载。新加坡节点继续提供备用入口。
 
 | 目标 | 推荐客户端 | 覆盖范围 |
 | --- | --- | --- |
@@ -16,7 +15,7 @@
 ```bash
 curl --fail --silent --show-error --location \
   --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.4.0/install-macos.sh \
+  https://raw.githubusercontent.com/MinBotAI/MinBot-Selective-Proxy/v1.4.1/install-macos.sh \
   | bash
 ```
 
@@ -129,13 +128,13 @@ iOS 上普通命令行程序不能常驻接管设备网络，因此需要具备 
 
 ## 系统 PAC 备选
 
-PAC 地址：`http://43.156.119.18:31456/proxy.pac`
+PAC 地址：`http://142.11.254.133:31456/proxy.pac`
 
 macOS：
 
 ```bash
 networksetup -setautoproxyurl "Wi-Fi" \
-  "http://43.156.119.18:31456/proxy.pac"
+  "http://142.11.254.133:31456/proxy.pac"
 networksetup -getautoproxyurl "Wi-Fi"
 ```
 

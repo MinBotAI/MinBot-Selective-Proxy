@@ -4,11 +4,11 @@
 set -euo pipefail
 
 readonly SCRIPT_REPOSITORY="${MINBOT_PROXY_GIT_URL:-https://github.com/MinBotAI/MinBot-Selective-Proxy.git}"
-readonly VERSION="1.4.0"
+readonly VERSION="1.4.1"
 readonly KEYCHAIN_SERVICE="ai.minbot.selective-proxy"
 readonly MANAGEMENT_API_URL="https://minbot-egress.local:31528/api/domains"
-readonly MANAGEMENT_API_RESOLVE="minbot-egress.local:31528:43.156.119.18"
-readonly MANAGEMENT_API_PUBLIC_KEY="sha256//GVMj+hTQYmgLDC+XzCL7Sy3MTneSXdqHwUoEcQ9qrXs="
+readonly MANAGEMENT_API_RESOLVE="minbot-egress.local:31528:142.11.254.133"
+readonly MANAGEMENT_API_PUBLIC_KEY="sha256//2HGoXxSoaE3HNrzMSMQclnrhQHss0+3ZDa9Axhcfdt8="
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/minbot-selective-proxy"
 readonly USERNAME_FILE="${CONFIG_DIR}/username"
 readonly INSTALL_NAME="minbot-proxy"
@@ -155,14 +155,14 @@ emit_sing_box_config() {
     {
       "type": "http",
       "tag": "minbot-egress",
-      "server": "43.156.119.18",
+      "server": "142.11.254.133",
       "server_port": 31528,
       "username": "REPLACE_WITH_USERNAME",
       "password": "REPLACE_WITH_PASSWORD",
       "tls": {
         "enabled": true,
         "server_name": "minbot-egress.local",
-        "certificate_public_key_sha256": ["GVMj+hTQYmgLDC+XzCL7Sy3MTneSXdqHwUoEcQ9qrXs="]
+        "certificate_public_key_sha256": ["2HGoXxSoaE3HNrzMSMQclnrhQHss0+3ZDa9Axhcfdt8="]
       }
     },
     {
@@ -230,7 +230,7 @@ emit_sing_box_config() {
         "type": "remote",
         "tag": "minbot-domains",
         "format": "source",
-        "url": "http://43.156.119.18:31456/domains.sing-box.json",
+        "url": "http://142.11.254.133:31456/domains.sing-box.json",
         "update_interval": "5m"
       }
     ]

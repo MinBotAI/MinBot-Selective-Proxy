@@ -52,8 +52,8 @@ def test_add_domain_reuses_saved_credentials_over_pinned_tls(cli_env):
     arguments = Path(cli_env["TEST_ARGUMENTS_FILE"]).read_text()
     curl_config = Path(cli_env["TEST_CONFIG_FILE"]).read_text()
     assert "https://minbot-egress.local:31528/api/domains" in arguments
-    assert "minbot-egress.local:31528:43.156.119.18" in arguments
-    assert "sha256//GVMj+hTQYmgLDC+XzCL7Sy3MTneSXdqHwUoEcQ9qrXs=" in arguments
+    assert "minbot-egress.local:31528:142.11.254.133" in arguments
+    assert "sha256//2HGoXxSoaE3HNrzMSMQclnrhQHss0+3ZDa9Axhcfdt8=" in arguments
     assert "--disable" in arguments
     assert "--noproxy\n*" in arguments
     assert '{"domain":"example.com"}' in arguments

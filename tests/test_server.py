@@ -199,11 +199,11 @@ def test_macos_tun_template_preserves_allowlisted_domains_for_http_proxy() -> No
         "enabled": True,
         "server_name": "minbot-egress.local",
         "certificate_public_key_sha256": [
-            "GVMj+hTQYmgLDC+XzCL7Sy3MTneSXdqHwUoEcQ9qrXs="
+            "2HGoXxSoaE3HNrzMSMQclnrhQHss0+3ZDa9Axhcfdt8="
         ],
     }
     assert config["route"]["rule_set"][0]["url"] == (
-        "http://43.156.119.18:31456/domains.sing-box.json"
+        "http://142.11.254.133:31456/domains.sing-box.json"
     )
     assert "cache_file" not in config["experimental"]
     assert config["experimental"]["clash_api"]["external_controller"] == "127.0.0.1:19090"
@@ -256,7 +256,7 @@ def test_macos_installer_reports_its_version() -> None:
         text=True,
     )
 
-    assert result.stdout.strip() == "minbot-proxy 1.4.0"
+    assert result.stdout.strip() == "minbot-proxy 1.4.1"
 
 
 def test_tls_certificate_and_key_must_be_configured_together(monkeypatch) -> None:
